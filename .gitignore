@@ -1,0 +1,11 @@
+.DS_Store
+
+# Xcode user-specific data
+*.xcuserstate
+Stackboard.xcodeproj/xcuserdata/
+Stackboard.xcodeproj/project.xcworkspace/xcuserdata/
+Stackboard.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings
+
+# Local build artifacts
+DerivedData/
+build/

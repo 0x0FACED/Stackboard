@@ -1,17 +1,22 @@
-//
-//  StackboardApp.swift
-//  Stackboard
-//
-//  Created by Децина Алексей Владимирович on 18.04.2026.
-//
-
 import SwiftUI
 
 @main
 struct StackboardApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+    @StateObject private var appController = AppController.shared
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra {
+            MenuBarMenuView(appController: appController)
+        } label: {
+            Image(nsImage: StatusBarIcon.menuBarImage)
+                .accessibilityLabel("Stackboard")
+        }
+        .menuBarExtraStyle(.window)
+
+        Settings {
+            EmptyView()
         }
     }
 }
+    
