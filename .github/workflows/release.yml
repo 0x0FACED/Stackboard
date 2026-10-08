@@ -169,5 +169,5 @@ jobs:
           {
             printf '### Stackboard %s\n\n' "$VERSION"
             printf 'Release: https://github.com/%s/releases/tag/%s\n\n' "$GH_REPO" "$RELEASE_TAG"
-            printf 'Homebrew: `brew update && brew upgrade --cask 0x0faced/stackboard/stackboard`\n'
+            printf "Homebrew: \`brew update && brew upgrade --cask 0x0faced/stackboard/stackboard\`\n"
           } >> "$GITHUB_STEP_SUMMARY"
