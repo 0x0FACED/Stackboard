@@ -189,6 +189,7 @@ final class EditorDocument: ObservableObject {
 
     @Published var selectedTool: EditorTool = .pen
     @Published private(set) var selectedColor: EditorColor = .yellow
+    /// Stored in image pixels; preview scales this width with the canvas, just like export.
     @Published var lineWidth: Double = 6
     @Published private(set) var blurRadius: Double = 14
     @Published private(set) var textFont: EditorTextFont = .system
@@ -196,15 +197,34 @@ final class EditorDocument: ObservableObject {
     @Published private(set) var annotations: [EditorAnnotation] = []
     @Published private(set) var activeStroke: EditorStroke?
     @Published private(set) var activeArrow: EditorArrow?
-    @Published private(set) var activeBlur: EditorBlur?
+    @Published private(set) var activeBlur: EditorBlur? {
+        didSet {
+            if let oldValue,
+               oldValue.id != activeBlur?.id,
+               annotations.contains(where: { $0.id == oldValue.id }) == false {
+                blurImageCache.removeValue(forKey: oldValue.id)
+            }
+        }
+    }
     @Published private(set) var selectedAnnotation: EditorSelection?
     @Published private(set) var pendingTextInsertion: PendingTextInsertion?
 
     private var interactionState: EditorCanvasInteractionState = .none
+    private let baseCIImage: CIImage?
+    private static let ciContext = CIContext()
+    private var blurImageCache: [UUID: CachedBlurImage] = [:]
+
+    private struct CachedBlurImage {
+        let rect: CGRect
+        let radius: Double
+        let image: NSImage
+    }
 
     init(baseImage: NSImage) {
         self.baseImage = baseImage
-        pixelSize = baseImage.pixelSize
+        let cgImage = baseImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
+        pixelSize = cgImage.map { CGSize(width: $0.width, height: $0.height) } ?? baseImage.size
+        baseCIImage = cgImage.map { CIImage(cgImage: $0) }
     }
 
     func activateTool(_ tool: EditorTool) {
@@ -314,9 +334,11 @@ final class EditorDocument: ObservableObject {
             return
         }
 
-        if let removed = annotations.popLast(),
-           removed.id == selectedAnnotation?.id {
-            selectedAnnotation = nil
+        if let removed = annotations.popLast() {
+            blurImageCache.removeValue(forKey: removed.id)
+            if removed.id == selectedAnnotation?.id {
+                selectedAnnotation = nil
+            }
         }
     }
 
@@ -454,9 +476,6 @@ final class EditorDocument: ObservableObject {
         graphicsContext.cgContext.scaleBy(x: scaleX, y: scaleY)
         baseImage.draw(in: CGRect(origin: .zero, size: pixelSize))
 
-        let ciContext = CIContext()
-        let baseCIImage = baseImage.cgImage(forProposedRect: nil, context: nil, hints: nil).map(CIImage.init)
-
         for annotation in annotations {
             switch annotation {
             case let .stroke(stroke):
@@ -464,9 +483,7 @@ final class EditorDocument: ObservableObject {
             case let .arrow(arrow):
                 drawArrow(arrow)
             case let .blur(blur):
-                if let baseCIImage {
-                    drawBlur(blur, baseCIImage: baseCIImage, ciContext: ciContext)
-                }
+                drawBlur(blur)
             case let .text(text):
                 drawText(text)
             }
@@ -476,21 +493,6 @@ final class EditorDocument: ObservableObject {
         let image = NSImage(size: baseImage.size)
         image.addRepresentation(bitmap)
         return image
-    }
-
-    var blurRects: [CGRect] {
-        let committed = annotations.compactMap {
-            if case let .blur(blur) = $0 {
-                return blur.rect
-            }
-            return nil
-        }
-
-        if let activeBlur {
-            return committed + [activeBlur.rect]
-        }
-
-        return committed
     }
 
     var committedAndActiveAnnotations: [EditorAnnotation] {
@@ -948,16 +950,19 @@ final class EditorDocument: ObservableObject {
         headPath.stroke()
     }
 
-    private func drawBlur(_ blur: EditorBlur, baseCIImage: CIImage, ciContext: CIContext) {
-        let ciRect = CGRect(
-            x: blur.rect.minX,
-            y: pixelSize.height - blur.rect.maxY,
-            width: blur.rect.width,
-            height: blur.rect.height
-        ).integral
+    /// Preview and export share the same pixel-resolution patch and radius. As in export's
+    /// annotation order, a blur replaces the captured region rather than blurring earlier marks.
+    /// Cache each annotation's latest patch so drawing a pen never re-filters existing blurs.
+    func blurImage(for blur: EditorBlur) -> NSImage? {
+        if let cached = blurImageCache[blur.id],
+           cached.rect == blur.rect,
+           cached.radius == blur.radius {
+            return cached.image
+        }
 
-        guard ciRect.isEmpty == false else {
-            return
+        let ciRect = flip(rect: blur.rect).integral
+        guard ciRect.isEmpty == false, let baseCIImage else {
+            return nil
         }
 
         let cropped = baseCIImage
@@ -969,12 +974,17 @@ final class EditorDocument: ObservableObject {
             )
             .cropped(to: ciRect)
 
-        guard let cgImage = ciContext.createCGImage(cropped, from: ciRect) else {
-            return
+        guard let cgImage = Self.ciContext.createCGImage(cropped, from: ciRect) else {
+            return nil
         }
 
         let image = NSImage(cgImage: cgImage, size: blur.rect.size)
-        image.draw(in: flip(rect: blur.rect))
+        blurImageCache[blur.id] = CachedBlurImage(rect: blur.rect, radius: blur.radius, image: image)
+        return image
+    }
+
+    private func drawBlur(_ blur: EditorBlur) {
+        blurImage(for: blur)?.draw(in: flip(rect: blur.rect))
     }
 
     private func drawText(_ text: EditorTextAnnotation) {

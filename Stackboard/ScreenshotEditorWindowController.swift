@@ -6,32 +6,51 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
     private let appController: AppController
     private let editorDocument: EditorDocument
 
-    init(appController: AppController, image: NSImage) {
+    /// Fits the native-point-size canvas to its captured screen, retaining an attainable fixed minimum.
+    init(appController: AppController, capture: ScreenshotCapture) {
         self.appController = appController
+        let image = capture.image
         editorDocument = EditorDocument(baseImage: image)
 
-        let hostingController = NSHostingController(
-            rootView: ScreenshotEditorView(document: editorDocument) { }
-        )
-
-        let frame = Self.initialFrame(for: image)
+        let visibleFrame = Self.visibleFrame(for: capture.selectionRect)
         let window = EscapeAwareWindow(
-            contentRect: frame,
+            contentRect: CGRect(
+                origin: capture.selectionRect.origin,
+                size: ScreenshotEditorView.minimumContentSize
+            ),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Stackboard Editor"
-        window.center()
         window.collectionBehavior = [.managed, .moveToActiveSpace, .fullScreenAuxiliary]
         window.hidesOnDeactivate = false
-        window.contentViewController = hostingController
         window.isReleasedWhenClosed = false
+
+        let maximumContentSize = window.contentRect(forFrameRect: visibleFrame).size
+        let minimumContentSize = CGSize(
+            width: min(ScreenshotEditorView.minimumContentSize.width, maximumContentSize.width),
+            height: min(ScreenshotEditorView.minimumContentSize.height, maximumContentSize.height)
+        )
+        let hostingController = NSHostingController(
+            rootView: ScreenshotEditorView(
+                document: editorDocument,
+                minimumSize: minimumContentSize,
+                onCopy: { }
+            )
+        )
+        hostingController.sizingOptions = [.minSize]
+        hostingController.view.autoresizingMask = [.width, .height]
+        window.contentViewController = hostingController
+        window.contentMinSize = minimumContentSize
 
         super.init(window: window)
 
         window.delegate = self
-        hostingController.rootView = ScreenshotEditorView(document: editorDocument) { [weak self] in
+        hostingController.rootView = ScreenshotEditorView(
+            document: editorDocument,
+            minimumSize: minimumContentSize
+        ) { [weak self] in
             self?.copyAndClose()
         }
         window.onEscape = { [weak self] in
@@ -45,6 +64,16 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
 
             self.copyAndClose()
         }
+
+        // Hosting attachment and initial layout can replace the window's requested size.
+        hostingController.view.layoutSubtreeIfNeeded()
+        let contentRect = Self.initialContentRect(
+            for: capture,
+            maximumContentSize: maximumContentSize,
+            minimumContentSize: minimumContentSize
+        )
+        let frame = window.frameRect(forContentRect: contentRect)
+        window.setFrame(Self.clampedFrame(frame, to: visibleFrame), display: false)
     }
 
     @available(*, unavailable)
@@ -69,37 +98,62 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
         close()
     }
 
-    private static func initialFrame(for image: NSImage) -> CGRect {
-        let visibleFrame = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
-        let chromePadding = CGSize(width: 56, height: 126)
-        let maxCanvasSize = CGSize(
-            width: visibleFrame.width * 0.9 - chromePadding.width,
-            height: visibleFrame.height * 0.82 - chromePadding.height
-        )
-        let naturalCanvasSize = image.size
+    private static func visibleFrame(for selectionRect: CGRect) -> CGRect {
+        let screen = NSScreen.screens.max { first, second in
+            let firstOverlap = first.frame.intersection(selectionRect)
+            let secondOverlap = second.frame.intersection(selectionRect)
+            let firstArea = firstOverlap.isNull ? 0 : firstOverlap.width * firstOverlap.height
+            let secondArea = secondOverlap.isNull ? 0 : secondOverlap.width * secondOverlap.height
+            return firstArea < secondArea
+        }
+        return screen?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+    }
 
+    private static func initialContentRect(
+        for capture: ScreenshotCapture,
+        maximumContentSize: CGSize,
+        minimumContentSize: CGSize
+    ) -> CGRect {
+        let naturalCanvasSize = capture.image.size
+        let maximumCanvasSize = CGSize(
+            width: maximumContentSize.width,
+            height: max(maximumContentSize.height - ScreenshotEditorView.chromeHeight, 0)
+        )
         let scale = min(
             1,
             min(
-                maxCanvasSize.width / max(naturalCanvasSize.width, 1),
-                maxCanvasSize.height / max(naturalCanvasSize.height, 1)
+                maximumCanvasSize.width / max(naturalCanvasSize.width, 1),
+                maximumCanvasSize.height / max(naturalCanvasSize.height, 1)
             )
         )
-
         let fittedCanvasSize = CGSize(
             width: naturalCanvasSize.width * scale,
             height: naturalCanvasSize.height * scale
         )
-
-        let width = min(
-            max(fittedCanvasSize.width + chromePadding.width, 900),
-            visibleFrame.width * 0.96
+        let contentSize = CGSize(
+            width: min(max(fittedCanvasSize.width, minimumContentSize.width), maximumContentSize.width),
+            height: min(
+                max(fittedCanvasSize.height + ScreenshotEditorView.chromeHeight, minimumContentSize.height),
+                maximumContentSize.height
+            )
         )
-        let height = min(
-            max(fittedCanvasSize.height + chromePadding.height, 620),
-            visibleFrame.height * 0.92
-        )
+        let canvasHeight = max(contentSize.height - ScreenshotEditorView.chromeHeight, 0)
 
-        return CGRect(x: 0, y: 0, width: width, height: height)
+        // Center the image over its captured location, including minimum-size letterboxing.
+        return CGRect(
+            x: capture.selectionRect.midX - contentSize.width * 0.5,
+            y: capture.selectionRect.midY - canvasHeight * 0.5,
+            width: contentSize.width,
+            height: contentSize.height
+        )
+    }
+
+    private static func clampedFrame(_ frame: CGRect, to visibleFrame: CGRect) -> CGRect {
+        CGRect(
+            x: min(max(frame.minX, visibleFrame.minX), visibleFrame.maxX - frame.width),
+            y: min(max(frame.minY, visibleFrame.minY), visibleFrame.maxY - frame.height),
+            width: frame.width,
+            height: frame.height
+        )
     }
 }

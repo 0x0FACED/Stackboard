@@ -7,6 +7,12 @@ struct DesktopCapture {
     let pixelSize: CGSize
 }
 
+/// Captured pixels and the selected rectangle in global AppKit screen points.
+struct ScreenshotCapture {
+    let image: NSImage
+    let selectionRect: CGRect
+}
+
 @MainActor
 enum DesktopCaptureFactory {
     static func captureDesktop() -> DesktopCapture? {

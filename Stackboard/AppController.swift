@@ -15,7 +15,7 @@ final class AppController: ObservableObject {
     private var screenshotCoordinator: ScreenshotCoordinator?
     private var historyWindowController: HistoryWindowController?
     private var historyImagePreviewWindowController: HistoryImagePreviewWindowController?
-    private var editorWindowController: ScreenshotEditorWindowController?
+    private var editorWindowControllers: [ScreenshotEditorWindowController] = []
     private var hotkeySettingsWindowController: HotkeySettingsWindowController?
     private var cancellables: Set<AnyCancellable> = []
 
@@ -29,9 +29,8 @@ final class AppController: ObservableObject {
     }
 
     func startScreenshot() {
-        NSApp.activate(ignoringOtherApps: true)
-        screenshotCoordinator?.beginSelection { [weak self] image in
-            self?.presentEditor(for: image)
+        screenshotCoordinator?.beginSelection { [weak self] capture in
+            self?.presentEditor(for: capture)
         }
     }
 
@@ -57,11 +56,12 @@ final class AppController: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    func presentEditor(for image: NSImage) {
-        editorWindowController?.close()
-        editorWindowController = ScreenshotEditorWindowController(appController: self, image: image)
-        editorWindowController?.showWindow(nil)
-        editorWindowController?.window?.makeKeyAndOrderFront(nil)
+    /// Keeps every editor independent so an existing editor can itself be captured.
+    func presentEditor(for capture: ScreenshotCapture) {
+        let controller = ScreenshotEditorWindowController(appController: self, capture: capture)
+        editorWindowControllers.append(controller)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
         refreshActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -152,9 +152,7 @@ final class AppController: ObservableObject {
     }
 
     func editorWindowDidClose(_ controller: ScreenshotEditorWindowController) {
-        if editorWindowController === controller {
-            editorWindowController = nil
-        }
+        editorWindowControllers.removeAll { $0 === controller }
         refreshActivationPolicy()
     }
 
@@ -255,10 +253,9 @@ final class AppController: ObservableObject {
     }
 
     private var hasVisibleForegroundWindows: Bool {
-        [
+        editorWindowControllers.contains { $0.window?.isVisible == true } || [
             historyWindowController?.window?.isVisible,
             historyImagePreviewWindowController?.window?.isVisible,
-            editorWindowController?.window?.isVisible,
             hotkeySettingsWindowController?.window?.isVisible
         ].contains(true)
     }

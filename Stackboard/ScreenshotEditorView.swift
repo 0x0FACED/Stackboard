@@ -8,7 +8,11 @@ private enum EditorToolbarContextMode {
 }
 
 struct ScreenshotEditorView: View {
+    static let minimumContentSize = CGSize(width: 900, height: 620)
+    static let chromeHeight: CGFloat = 65
+
     @ObservedObject var document: EditorDocument
+    var minimumSize: CGSize = Self.minimumContentSize
     let onCopy: () -> Void
 
     private let palette: [EditorColor] = [.yellow, .red, .blue, .green, .white]
@@ -17,15 +21,16 @@ struct ScreenshotEditorView: View {
         VStack(spacing: 0) {
             toolbar
             Divider()
+                .frame(height: 1)
             EditorCanvasView(document: document)
         }
-        .frame(minWidth: 900, minHeight: 620)
+        .frame(minWidth: minimumSize.width, minHeight: minimumSize.height)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
     private var toolbar: some View {
-        HStack(spacing: 12) {
-            HStack(spacing: 8) {
+        HStack(spacing: 8) {
+            HStack(spacing: 4) {
                 ForEach(EditorTool.allCases) { tool in
                     EditorToolbarIconButton(
                         systemImage: tool.iconName,
@@ -34,14 +39,15 @@ struct ScreenshotEditorView: View {
                     ) {
                         document.activateTool(tool)
                     }
-                    .help(tool.title)
+                    .help(toolHelp(for: tool))
                 }
             }
+            .fixedSize()
 
             Divider()
                 .frame(height: 20)
 
-            HStack(spacing: 8) {
+            HStack(spacing: 4) {
                 ForEach(Array(palette.enumerated()), id: \.offset) { _, color in
                     Button {
                         document.applySelectedColor(color)
@@ -62,40 +68,40 @@ struct ScreenshotEditorView: View {
                     .buttonStyle(.plain)
                 }
             }
+            .fixedSize()
 
             if contextMode != .none {
-                HStack(spacing: 8) {
-                    Image(systemName: "line.3.horizontal.decrease")
-                        .foregroundStyle(.secondary)
-                    contextControl
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        contextControl
+                        if contextMode == .text {
+                            textControls
+                        }
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
                 }
-            } else if document.selectedTool == .move {
-                Label("Select blur or text to move and resize", systemImage: "cursorarrow.motionlines")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
+                .scrollIndicators(.never)
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
+            } else {
+                Spacer(minLength: 0)
             }
-
-            if contextMode == .text {
-                textControls
-            }
-
-            Spacer(minLength: 0)
-
-            Text("Pinch to zoom. Esc clears selection first, then copies and closes.")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
 
             Button("Undo") {
                 document.undoLastAnnotation()
             }
+            .fixedSize()
+            .help("Undo the last annotation")
 
             Button("Copy to Clipboard") {
                 onCopy()
             }
             .keyboardShortcut(.defaultAction)
+            .fixedSize()
+            .help("Copy to Clipboard. Esc clears selection first, then copies and closes.")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.horizontal, 12)
+        .frame(height: Self.chromeHeight - 1)
     }
 
     @ViewBuilder
@@ -104,6 +110,8 @@ struct ScreenshotEditorView: View {
         case .lineWidth:
             Slider(value: $document.lineWidth, in: 2 ... 16)
                 .frame(width: 120)
+                .accessibilityLabel("Line width")
+                .help("Line width in image pixels")
         case .blur:
             Slider(
                 value: Binding(
@@ -113,6 +121,8 @@ struct ScreenshotEditorView: View {
                 in: 4 ... 28
             )
             .frame(width: 120)
+            .accessibilityLabel("Blur radius")
+            .help("Blur radius in image pixels")
             Text("\(Int(document.currentBlurControlValue.rounded()))")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -126,6 +136,8 @@ struct ScreenshotEditorView: View {
                 in: 14 ... 48
             )
             .frame(width: 120)
+            .accessibilityLabel("Text size")
+            .help("Text size in image pixels")
             Text("\(Int(document.currentTextSizeControlValue.rounded()))")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -136,17 +148,7 @@ struct ScreenshotEditorView: View {
     }
 
     private var textControls: some View {
-        HStack(spacing: 10) {
-            if document.selectedTool == .text {
-                Label("Click image to type", systemImage: "cursortext")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-            } else {
-                Label("Selected text", systemImage: "cursorarrow")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-
+        HStack(spacing: 8) {
             Picker(
                 "Font",
                 selection: Binding(
@@ -160,6 +162,18 @@ struct ScreenshotEditorView: View {
             }
             .pickerStyle(.menu)
             .frame(width: 120)
+            .help(document.selectedTool == .text ? "Click the image to type" : "Selected text font")
+        }
+    }
+
+    private func toolHelp(for tool: EditorTool) -> String {
+        switch tool {
+        case .move:
+            return "Select blur or text to move and resize"
+        case .text:
+            return "Click the image to type"
+        case .pen, .arrow, .blur:
+            return tool.title
         }
     }
 
@@ -217,8 +231,17 @@ private struct EditorCanvasView: View {
     var body: some View {
         GeometryReader { proxy in
             let viewportSize = proxy.size
-            let fittedRect = aspectFitRect(for: document.baseImage.size, in: viewportSize)
-            let baseCanvasSize = fittedRect.size
+            let imageSize = document.baseImage.size
+            // A minimum-size editor must not stretch a small capture beyond its native point size.
+            let fitScale = min(
+                1,
+                viewportSize.width / max(imageSize.width, 1),
+                viewportSize.height / max(imageSize.height, 1)
+            )
+            let baseCanvasSize = CGSize(
+                width: imageSize.width * fitScale,
+                height: imageSize.height * fitScale
+            )
             let zoomScale = min(max(baseZoomScale * liveMagnification, 1), 5)
             let canvasSize = CGSize(
                 width: baseCanvasSize.width * zoomScale,
@@ -269,31 +292,13 @@ private struct EditorCanvasView: View {
                 .resizable()
                 .frame(width: canvasSize.width, height: canvasSize.height)
 
-            if document.blurRects.isEmpty == false {
-                Image(nsImage: document.baseImage)
-                    .resizable()
-                    .frame(width: canvasSize.width, height: canvasSize.height)
-                    .blur(radius: 14)
-                    .mask(
-                        BlurMaskView(
-                            rects: document.blurRects,
-                            pixelSize: document.pixelSize
-                        )
-                    )
+            AnnotationLayersView(document: document)
+                .allowsHitTesting(false)
+
+            if let activeBlur = document.activeBlur {
+                BlurOutlineView(blur: activeBlur, pixelSize: document.pixelSize)
+                    .allowsHitTesting(false)
             }
-
-            AnnotationCanvasView(
-                annotations: document.committedAndActiveAnnotations,
-                activeBlur: document.activeBlur,
-                pixelSize: document.pixelSize
-            )
-            .allowsHitTesting(false)
-
-            AnnotationTextLayer(
-                annotations: document.committedAndActiveAnnotations,
-                pixelSize: document.pixelSize
-            )
-            .allowsHitTesting(false)
 
             if let selectionOverlay = document.selectionOverlay {
                 AnnotationSelectionOverlayView(
@@ -325,6 +330,7 @@ private struct EditorCanvasView: View {
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.24), radius: 24, y: 14)
+        .help("Pinch to zoom")
     }
 
     private func zoomBadge(_ zoomScale: CGFloat) -> some View {
@@ -406,60 +412,94 @@ private struct EditorCanvasView: View {
     }
 }
 
-private struct BlurMaskView: View {
-    let rects: [CGRect]
+private struct AnnotationLayersView: View {
+    @ObservedObject var document: EditorDocument
+
+    var body: some View {
+        GeometryReader { proxy in
+            // Keep the same stacking order as export: blur patches replace earlier marks,
+            // while annotations added after a blur remain above it.
+            ZStack(alignment: .topLeading) {
+                ForEach(document.committedAndActiveAnnotations) { annotation in
+                    switch annotation {
+                    case .stroke, .arrow:
+                        AnnotationCanvasView(annotation: annotation, pixelSize: document.pixelSize)
+                    case let .blur(blur):
+                        if let image = document.blurImage(for: blur) {
+                            Image(nsImage: image)
+                                .resizable()
+                                .interpolation(.high)
+                                .frame(
+                                    width: blur.rect.width / document.pixelSize.width * proxy.size.width,
+                                    height: blur.rect.height / document.pixelSize.height * proxy.size.height
+                                )
+                                .offset(
+                                    x: blur.rect.minX / document.pixelSize.width * proxy.size.width,
+                                    y: blur.rect.minY / document.pixelSize.height * proxy.size.height
+                                )
+                        }
+                    case let .text(text):
+                        AnnotationTextLayer(annotation: text, pixelSize: document.pixelSize)
+                    }
+                }
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+        }
+    }
+}
+
+private struct BlurOutlineView: View {
+    let blur: EditorBlur
     let pixelSize: CGSize
 
     var body: some View {
         Canvas { context, size in
-            for rect in rects {
-                let scaledRect = CGRect(
-                    x: rect.minX / pixelSize.width * size.width,
-                    y: rect.minY / pixelSize.height * size.height,
-                    width: rect.width / pixelSize.width * size.width,
-                    height: rect.height / pixelSize.height * size.height
-                )
-                context.fill(Path(scaledRect), with: .color(.white))
-            }
+            let rect = CGRect(
+                x: blur.rect.minX / pixelSize.width * size.width,
+                y: blur.rect.minY / pixelSize.height * size.height,
+                width: blur.rect.width / pixelSize.width * size.width,
+                height: blur.rect.height / pixelSize.height * size.height
+            )
+            context.stroke(
+                Path(rect),
+                with: .color(.white.opacity(0.85)),
+                style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+            )
         }
     }
 }
 
 private struct AnnotationCanvasView: View {
-    let annotations: [EditorAnnotation]
-    let activeBlur: EditorBlur?
+    let annotation: EditorAnnotation
     let pixelSize: CGSize
 
     var body: some View {
         Canvas { context, size in
-            for annotation in annotations {
-                switch annotation {
-                case let .stroke(stroke):
-                    drawStroke(stroke, in: &context, size: size)
-                case let .arrow(arrow):
-                    drawArrow(arrow, in: &context, size: size)
-                case .blur:
-                    break
-                case .text:
-                    break
-                }
-            }
-
-            if let activeBlur {
-                drawBlurOutline(activeBlur, in: &context, size: size)
+            // Transform pixel-space geometry and stroke widths together, including arrow heads.
+            context.scaleBy(
+                x: size.width / max(pixelSize.width, 1),
+                y: size.height / max(pixelSize.height, 1)
+            )
+            switch annotation {
+            case let .stroke(stroke):
+                drawStroke(stroke, in: &context)
+            case let .arrow(arrow):
+                drawArrow(arrow, in: &context)
+            case .blur, .text:
+                break
             }
         }
     }
 
-    private func drawStroke(_ stroke: EditorStroke, in context: inout GraphicsContext, size: CGSize) {
+    private func drawStroke(_ stroke: EditorStroke, in context: inout GraphicsContext) {
         guard stroke.points.count > 1 else {
             return
         }
 
         var path = Path()
-        path.move(to: scale(point: stroke.points[0], size: size))
+        path.move(to: stroke.points[0])
         for point in stroke.points.dropFirst() {
-            path.addLine(to: scale(point: point, size: size))
+            path.addLine(to: point)
         }
 
         context.stroke(
@@ -469,9 +509,9 @@ private struct AnnotationCanvasView: View {
         )
     }
 
-    private func drawArrow(_ arrow: EditorArrow, in context: inout GraphicsContext, size: CGSize) {
-        let start = scale(point: arrow.start, size: size)
-        let end = scale(point: arrow.end, size: size)
+    private func drawArrow(_ arrow: EditorArrow, in context: inout GraphicsContext) {
+        let start = arrow.start
+        let end = arrow.end
         let width = arrow.lineWidth
 
         var shaft = Path()
@@ -511,31 +551,10 @@ private struct AnnotationCanvasView: View {
         )
     }
 
-    private func drawBlurOutline(_ blur: EditorBlur, in context: inout GraphicsContext, size: CGSize) {
-        let rect = CGRect(
-            x: blur.rect.minX / pixelSize.width * size.width,
-            y: blur.rect.minY / pixelSize.height * size.height,
-            width: blur.rect.width / pixelSize.width * size.width,
-            height: blur.rect.height / pixelSize.height * size.height
-        )
-
-        context.stroke(
-            Path(rect),
-            with: .color(.white.opacity(0.85)),
-            style: StrokeStyle(lineWidth: 2, dash: [6, 4])
-        )
-    }
-
-    private func scale(point: CGPoint, size: CGSize) -> CGPoint {
-        CGPoint(
-            x: point.x / pixelSize.width * size.width,
-            y: point.y / pixelSize.height * size.height
-        )
-    }
 }
 
 private struct AnnotationTextLayer: View {
-    let annotations: [EditorAnnotation]
+    let annotation: EditorTextAnnotation
     let pixelSize: CGSize
 
     var body: some View {
@@ -546,25 +565,14 @@ private struct AnnotationTextLayer: View {
             )
 
             ZStack(alignment: .topLeading) {
-                ForEach(textAnnotations, id: \.id) { annotation in
-                    Text(annotation.text)
-                        .font(annotation.font.swiftUIFont(size: annotation.fontSize * scale))
-                        .foregroundStyle(Color(nsColor: annotation.color.nsColor))
-                        .offset(
-                            x: annotation.origin.x / pixelSize.width * proxy.size.width,
-                            y: annotation.origin.y / pixelSize.height * proxy.size.height
-                        )
-                }
+                Text(annotation.text)
+                    .font(annotation.font.swiftUIFont(size: annotation.fontSize * scale))
+                    .foregroundStyle(Color(nsColor: annotation.color.nsColor))
+                    .offset(
+                        x: annotation.origin.x / pixelSize.width * proxy.size.width,
+                        y: annotation.origin.y / pixelSize.height * proxy.size.height
+                    )
             }
-        }
-    }
-
-    private var textAnnotations: [EditorTextAnnotation] {
-        annotations.compactMap {
-            if case let .text(annotation) = $0 {
-                return annotation
-            }
-            return nil
         }
     }
 }

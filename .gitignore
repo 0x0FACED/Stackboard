@@ -9,3 +9,6 @@ Stackboard.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettin
 # Local build artifacts
 DerivedData/
 build/
+dist/
+.homebrew-tap/
+__pycache__/

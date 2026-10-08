@@ -4,11 +4,18 @@ import CoreGraphics
 @MainActor
 final class ScreenshotCoordinator {
     private var selectionWindowController: ScreenshotSelectionWindowController?
+    private(set) var isSelecting = false
 
-    func beginSelection(onCapture: @escaping (NSImage) -> Void) {
+    /// Ignores requests during capture/selection; an open editor does not block a new capture.
+    func beginSelection(onCapture: @escaping (ScreenshotCapture) -> Void) {
+        guard isSelecting == false else {
+            return
+        }
+        isSelecting = true
         NSApp.activate(ignoringOtherApps: true)
 
         guard ensureScreenCapturePermission() else {
+            isSelecting = false
             return
         }
 
@@ -17,22 +24,25 @@ final class ScreenshotCoordinator {
                 title: "Screenshot capture failed",
                 message: "Stackboard could not capture the screen."
             )
+            isSelecting = false
             return
         }
 
-        selectionWindowController?.close()
         selectionWindowController = ScreenshotSelectionWindowController(capture: capture) { [weak self] selectedRect in
-            self?.selectionWindowController = nil
+            guard let self else {
+                return
+            }
+            self.selectionWindowController = nil
+            self.isSelecting = false
 
             guard
-                let self,
                 let selectedRect,
                 let image = self.crop(capture: capture, selectedRect: selectedRect)
             else {
                 return
             }
 
-            onCapture(image)
+            onCapture(ScreenshotCapture(image: image, selectionRect: selectedRect))
         }
         selectionWindowController?.present()
     }

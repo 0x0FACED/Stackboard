@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-tools:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Check shell syntax and release-tool behavior
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          bash -n scripts/package-release.sh
+          python3 -m unittest discover -s tests -v
+
+  universal-release:
+    if: github.event.repository.private == false
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Show selected toolchain
+        run: xcodebuild -version
+      - name: Build and verify the distributable app
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: bash scripts/package-release.sh 0.0.0 "$RUNNER_TEMP/stackboard-ci"
+      - name: Verify the same package without rebuilding
+        run: bash scripts/package-release.sh --verify-existing 0.0.0 "$RUNNER_TEMP/stackboard-ci"

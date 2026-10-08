@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable tag to publish or resume, for example v1.0.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Serialize all versions, not just identical tags, so tap updates cannot race each other.
+concurrency:
+  group: stackboard-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.event.repository.private == false
+    runs-on: macos-26
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.4.1.app/Contents/Developer
+      PYTHONDONTWRITEBYTECODE: "1"
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      GH_API_URL: ${{ github.api_url }}
+    steps:
+      - name: Validate release tag and tap credentials
+        id: version
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Use an existing stable tag vX.Y.Z without a prerelease suffix."
+            exit 1
+          fi
+          if [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
+            echo "::error::Add HOMEBREW_TAP_TOKEN with Contents write access to 0x0FACED/homebrew-stackboard."
+            exit 1
+          fi
+          printf 'version=%s\n' "${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          printf 'PACKAGE_DIR=%s/stackboard-release\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Check out the tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify source and release tools
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          bash -n scripts/package-release.sh
+          python3 -m unittest discover -s tests -v
+          xcodebuild -version
+
+      - name: Check out the Homebrew tap
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: 0x0FACED/homebrew-stackboard
+          ref: main
+          path: .homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          persist-credentials: true
+
+      - name: Inspect existing release
+        id: release
+        run: |
+          set -euo pipefail
+          response="$RUNNER_TEMP/stackboard-github-release.json"
+          status=$(curl --silent --show-error --output "$response" --write-out '%{http_code}' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'Accept: application/vnd.github+json' \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "$GH_API_URL/repos/$GH_REPO/releases/tags/$RELEASE_TAG")
+          case "$status" in
+            404) echo 'state=missing' >> "$GITHUB_OUTPUT" ;;
+            200)
+              jq -e --arg tag "$RELEASE_TAG" '.tag_name == $tag and (.draft | type) == "boolean" and .prerelease == false' "$response" > /dev/null
+              if [[ "$(jq -r '.draft' "$response")" == true ]]; then
+                echo 'state=draft' >> "$GITHUB_OUTPUT"
+              else
+                for asset in Stackboard.zip SHA256SUMS; do
+                  jq -e --arg name "$asset" '[.assets[] | select(.name == $name and .state == "uploaded")] | length == 1' "$response" > /dev/null
+                done
+                echo 'state=published' >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            *)
+              echo "::error::Cannot inspect GitHub Release (HTTP $status); publication stopped."
+              exit 1
+              ;;
+          esac
+
+      - name: Build a new Universal package
+        if: steps.release.outputs.state != 'published'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: bash scripts/package-release.sh "$VERSION" "$PACKAGE_DIR"
+
+      - name: Reuse immutable published assets
+        if: steps.release.outputs.state == 'published'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$PACKAGE_DIR"
+          gh release download "$RELEASE_TAG" --pattern Stackboard.zip --pattern SHA256SUMS --dir "$PACKAGE_DIR"
+          bash scripts/package-release.sh --verify-existing "$VERSION" "$PACKAGE_DIR"
+
+      # Validate against the latest tap before publishing, so old tags cannot downgrade users.
+      - name: Prepare and validate the Homebrew update
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          sha256=$(jq -er '.sha256' "$PACKAGE_DIR/release.json")
+          minimum_macos=$(jq -er '.minimum_macos' "$PACKAGE_DIR/release.json")
+          python3 scripts/update_homebrew.py .homebrew-tap/Casks/stackboard.rb \
+            --version "$VERSION" --sha256 "$sha256" --minimum-macos "$minimum_macos"
+          ruby -c .homebrew-tap/Casks/stackboard.rb
+
+      - name: Publish verified assets
+        if: steps.release.outputs.state != 'published'
+        env:
+          RELEASE_STATE: ${{ steps.release.outputs.state }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_STATE" == missing ]]; then
+            gh release create "$RELEASE_TAG" --draft --verify-tag --title "$RELEASE_TAG" --generate-notes \
+              --notes 'Universal macOS app (Apple Silicon and Intel). Ad-hoc signed, not notarized: macOS may require explicit approval to open it. See README for installation and Screen Recording permissions. Verify the download with SHA256SUMS.'
+          fi
+          # Only unpublished drafts may have their assets replaced on a resumed run.
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')" = true
+          gh release upload "$RELEASE_TAG" "$PACKAGE_DIR/Stackboard.zip" "$PACKAGE_DIR/SHA256SUMS" --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
+
+      - name: Commit and push the Homebrew update
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if git -C .homebrew-tap diff --quiet -- Casks/stackboard.rb; then
+            echo 'Homebrew tap already matches this release.'
+            exit 0
+          fi
+          git -C .homebrew-tap config user.name 'github-actions[bot]'
+          git -C .homebrew-tap config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C .homebrew-tap add -- Casks/stackboard.rb
+          git -C .homebrew-tap commit -m "Update Stackboard to $VERSION"
+          git -C .homebrew-tap push origin HEAD:main
+
+      - name: Report published release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            printf '### Stackboard %s\n\n' "$VERSION"
+            printf 'Release: https://github.com/%s/releases/tag/%s\n\n' "$GH_REPO" "$RELEASE_TAG"
+            printf 'Homebrew: `brew update && brew upgrade --cask 0x0faced/stackboard/stackboard`\n'
+          } >> "$GITHUB_STEP_SUMMARY"
