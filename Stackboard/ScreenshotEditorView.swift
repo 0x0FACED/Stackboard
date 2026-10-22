@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 private enum EditorToolbarContextMode {
@@ -15,6 +16,7 @@ struct ScreenshotEditorView: View {
     static let sidebarWidth: CGFloat = 176
 
     @ObservedObject var document: EditorDocument
+    @StateObject private var nativeInput = EditorNativeInputState()
     var minimumSize: CGSize = Self.minimumContentSize
     let onCopy: () -> Void
 
@@ -25,10 +27,20 @@ struct ScreenshotEditorView: View {
             toolbar
             Divider()
                 .frame(width: 1)
-            EditorCanvasView(document: document)
+            EditorCanvasView(document: document, nativeInput: nativeInput)
         }
         .frame(minWidth: minimumSize.width, minHeight: minimumSize.height)
         .background(Color(nsColor: .windowBackgroundColor))
+        .background(
+            EditorKeyboardMonitorView(
+                document: document,
+                nativeInput: nativeInput,
+                onCopy: copyToClipboard
+            )
+        )
+        .onAppear {
+            NSColorPanel.shared.isContinuous = false
+        }
     }
 
     private var toolbar: some View {
@@ -42,6 +54,9 @@ struct ScreenshotEditorView: View {
                                 isSelected: document.selectedTool == tool,
                                 accessibilityLabel: tool.title
                             ) {
+                                if document.selectedTool != tool {
+                                    nativeInput.finishAnnotationEditing()
+                                }
                                 document.activateTool(tool)
                             }
                             .help(toolHelp(for: tool))
@@ -57,6 +72,7 @@ struct ScreenshotEditorView: View {
                     ) {
                         ForEach(Array(palette.enumerated()), id: \.offset) { _, color in
                             Button {
+                                nativeInput.finishNumberEditing()
                                 document.applySelectedColor(color)
                             } label: {
                                 Circle()
@@ -82,6 +98,7 @@ struct ScreenshotEditorView: View {
                                     guard let color = NSColor(newColor).usingColorSpace(.sRGB) else {
                                         return
                                     }
+                                    nativeInput.finishNumberEditing()
                                     document.applySelectedColor(
                                         EditorColor(
                                             red: Double(color.redComponent),
@@ -111,6 +128,21 @@ struct ScreenshotEditorView: View {
                             }
                         }
                     }
+
+                    if document.selectedAnnotation != nil {
+                        Divider()
+                        HStack {
+                            Button("Duplicate") {
+                                document.duplicateSelectedAnnotation()
+                            }
+                            .help("Duplicate selected object (⌘D)")
+                            Button("Delete") {
+                                document.deleteSelectedAnnotation()
+                            }
+                            .help("Delete selected object (Delete)")
+                        }
+                        .disabled(usesNativeHistory)
+                    }
                 }
                 .padding(12)
             }
@@ -119,15 +151,37 @@ struct ScreenshotEditorView: View {
             Divider()
 
             VStack(spacing: 8) {
-                Button {
-                    document.undoLastAnnotation()
-                } label: {
-                    Text("Undo")
-                        .frame(maxWidth: .infinity)
-                }
-                .help("Undo the last annotation or erase stroke")
+                HStack {
+                    Button {
+                        if usesNativeHistory {
+                            nativeInput.undo()
+                        } else {
+                            document.undo()
+                        }
+                    } label: {
+                        Text("Undo")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(usesNativeHistory ? !nativeInput.canUndo : !document.canUndo)
+                    .help(historyHelp(isRedo: false))
+                    .focusable(false)
 
-                Button(action: onCopy) {
+                    Button {
+                        if usesNativeHistory {
+                            nativeInput.redo()
+                        } else {
+                            document.redo()
+                        }
+                    } label: {
+                        Text("Redo")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .disabled(usesNativeHistory ? !nativeInput.canRedo : !document.canRedo)
+                    .help(historyHelp(isRedo: true))
+                    .focusable(false)
+                }
+
+                Button(action: copyToClipboard) {
                     Text("Copy to Clipboard")
                         .frame(maxWidth: .infinity)
                 }
@@ -136,6 +190,11 @@ struct ScreenshotEditorView: View {
             .padding(12)
         }
         .frame(width: Self.sidebarWidth - 1)
+    }
+
+    private func copyToClipboard() {
+        nativeInput.finishAnnotationEditing()
+        onCopy()
     }
 
     @ViewBuilder
@@ -159,17 +218,27 @@ struct ScreenshotEditorView: View {
                 Text("Shape style")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
-                Picker("Shape style", selection: $document.shapeStyle) {
+                Picker(
+                    "Shape style",
+                    selection: Binding(
+                        get: { document.currentShapeStyle },
+                        set: {
+                            nativeInput.finishNumberEditing()
+                            document.setShapeStyle($0)
+                        }
+                    )
+                ) {
                     ForEach(EditorShapeStyle.allCases) { style in
                         Text(style.title).tag(style)
                     }
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                if document.shapeStyle == .outline {
+                if document.currentShapeStyle == .outline {
                     lineWidthControl
                 }
-                Text(document.selectedTool == .rectangle ? "Hold Shift for a square" : "Hold Shift for a circle")
+                Text(document.selectedTool == .move ? "Hold Shift to keep proportions" :
+                    document.selectedTool == .rectangle ? "Hold Shift for a square" : "Hold Shift for a circle")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -186,7 +255,8 @@ struct ScreenshotEditorView: View {
                         get: { document.currentBlurControlValue },
                         set: { document.setBlurControlValue($0) }
                     ),
-                    in: 4 ... 28
+                    in: 4 ... 28,
+                    onEditingChanged: editStyle
                 )
                 .accessibilityLabel("Blur radius")
                 .help("Blur radius in image pixels")
@@ -194,17 +264,23 @@ struct ScreenshotEditorView: View {
                 HStack {
                     Text("Text size")
                     Spacer()
-                    TextField(
-                        "Text size",
-                        value: Binding(
-                            get: { document.currentTextSizeControlValue },
-                            set: { document.setTextSizeControlValue($0) }
-                        ),
-                        format: .number.precision(.fractionLength(0 ... 1))
+                    EditorNumberField(
+                        value: document.currentTextSizeControlValue,
+                        nativeInput: nativeInput,
+                        onChange: document.setTextSizeControlValue,
+                        onBeginEditing: document.beginStyleEditing,
+                        onEndEditing: document.endStyleEditing
                     )
-                    .textFieldStyle(.roundedBorder)
                     .multilineTextAlignment(.trailing)
-                    .frame(width: 58)
+                    .frame(width: 58, height: 24)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(Color(nsColor: .textBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .stroke(Color.primary.opacity(0.2), lineWidth: 1)
+                    )
                     .accessibilityLabel("Text size in image pixels")
                 }
                 .font(.system(size: 12, weight: .medium))
@@ -214,7 +290,8 @@ struct ScreenshotEditorView: View {
                         get: { document.currentTextSizeControlValue },
                         set: { document.setTextSizeControlValue($0) }
                     ),
-                    in: 8 ... 256
+                    in: 8 ... 256,
+                    onEditingChanged: editStyle
                 )
                 .accessibilityLabel("Text size")
                 .help("Text size in image pixels")
@@ -229,7 +306,14 @@ struct ScreenshotEditorView: View {
             Text("Line width")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
-            Slider(value: $document.lineWidth, in: 2 ... 16)
+            Slider(
+                value: Binding(
+                    get: { document.currentLineWidthControlValue },
+                    set: { document.setLineWidthControlValue($0) }
+                ),
+                in: 2 ... 16,
+                onEditingChanged: editStyle
+            )
                 .accessibilityLabel("Line width")
                 .help("Line width in image pixels")
         }
@@ -241,7 +325,10 @@ struct ScreenshotEditorView: View {
             "Font",
             selection: Binding(
                 get: { document.currentTextFont },
-                set: { document.setTextFont($0) }
+                set: {
+                    nativeInput.finishNumberEditing()
+                    document.setTextFont($0)
+                }
             )
         ) {
             ForEach(EditorTextFont.allCases) { font in
@@ -253,20 +340,15 @@ struct ScreenshotEditorView: View {
 
         if document.pendingTextInsertion != nil {
             Button("Done") {
+                nativeInput.finishAnnotationEditing()
                 document.commitPendingTextInsertion()
             }
             .help("Finish editing text (⌘Enter or Esc)")
         } else if document.selectedAnnotation?.kind == .text {
-            HStack {
-                Button("Edit") {
-                    document.beginEditingSelectedText()
-                }
-                .help("Edit selected text (Enter)")
-                Button("Delete") {
-                    document.deleteSelectedText()
-                }
-                .help("Delete selected text")
+            Button("Edit") {
+                document.beginEditingSelectedText()
             }
+            .help("Edit selected text (Enter)")
         }
 
         Text("Enter: new line · ⌘Enter: done\nMove: double-click to edit\nDrag the handle to change width")
@@ -278,7 +360,7 @@ struct ScreenshotEditorView: View {
     private func toolHelp(for tool: EditorTool) -> String {
         switch tool {
         case .move:
-            return "Select blur or text to move. Drag the handle to resize; double-click text to edit."
+            return "Select any object to move. Drag handles to resize or adjust arrow endpoints; double-click text to edit."
         case .text:
             return "Click the image to type, or click existing text to edit"
         case .eraser:
@@ -296,6 +378,10 @@ struct ScreenshotEditorView: View {
         switch document.selectedTool {
         case .move:
             switch document.selectedAnnotation?.kind {
+            case .stroke?, .arrow?:
+                return .lineWidth
+            case .shape?:
+                return .shape
             case .blur?:
                 return .blur
             case .text?:
@@ -314,6 +400,27 @@ struct ScreenshotEditorView: View {
         case .text:
             return .text
         }
+    }
+
+    private var usesNativeHistory: Bool {
+        document.pendingTextInsertion != nil || nativeInput.hasActiveInput
+    }
+
+    private func editStyle(_ isEditing: Bool) {
+        if isEditing {
+            nativeInput.finishNumberEditing()
+            document.beginStyleEditing()
+        } else {
+            document.endStyleEditing()
+        }
+    }
+
+    private func historyHelp(isRedo: Bool) -> String {
+        let verb = isRedo ? "Redo" : "Undo"
+        let name = usesNativeHistory ?
+            (isRedo ? nativeInput.redoActionName : nativeInput.undoActionName) :
+            (isRedo ? document.redoActionName : document.undoActionName)
+        return "\(verb)\(name.isEmpty ? "" : " \(name)") (\(isRedo ? "⇧⌘Z" : "⌘Z"))"
     }
 }
 
@@ -350,6 +457,7 @@ private struct EditorToolbarIconButton: View {
 
 private struct EditorCanvasView: View {
     @ObservedObject var document: EditorDocument
+    @ObservedObject var nativeInput: EditorNativeInputState
     @State private var didBeginInteraction = false
     @State private var baseZoomScale: CGFloat = 1
     @State private var isEditingDoubleClick = false
@@ -474,8 +582,10 @@ private struct EditorCanvasView: View {
                     pendingTextInsertion: pendingTextInsertion,
                     textBounds: textBounds,
                     pixelSize: document.pixelSize,
+                    nativeInput: nativeInput,
                     onTextChange: document.setPendingText,
                     onCommit: {
+                        nativeInput.finishAnnotationEditing()
                         document.commitPendingTextInsertion()
                     }
                 )
@@ -519,92 +629,64 @@ private struct EditorCanvasView: View {
     private func dragGesture(for canvasSize: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                // Coalesced drag events must not lose the start of an eraser stroke.
-                let startsErasing = didBeginInteraction == false && document.selectedTool == .eraser
-                let eraserStart = startsErasing ? mapToImageSpace(
-                    location: value.startLocation,
-                    canvasSize: canvasSize,
-                    clamp: false
-                ) : nil
-                guard startsErasing == false || eraserStart != nil else {
-                    return
-                }
-                let allowsRawEndpoint = (didBeginInteraction || startsErasing) &&
-                    (document.selectedTool == .rectangle || document.selectedTool == .ellipse ||
-                        document.selectedTool == .eraser)
-                guard let point = mapToImageSpace(
-                    location: value.location,
-                    canvasSize: canvasSize,
-                    clamp: false,
-                    allowOutsideBounds: allowsRawEndpoint
-                ) else {
-                    return
-                }
-                if document.selectedTool == .eraser {
-                    eraserCursorLocation = value.location
-                }
-
                 if didBeginInteraction == false {
-                    didBeginInteraction = true
-                    if document.selectedTool == .move,
-                       (NSApp.currentEvent?.clickCount ?? 0) == 2,
-                       document.beginEditingText(at: point) {
-                        isEditingDoubleClick = true
-                        return
-                    }
-                    document.beginInteraction(at: eraserStart ?? point)
-                    if startsErasing {
-                        document.updateInteraction(at: point)
-                    }
-                } else if isEditingDoubleClick == false {
-                    document.updateInteraction(
-                        at: point,
-                        constrainProportions: (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.shift)
-                    )
+                    guard let start = mapToImageSpace(
+                        location: value.startLocation, canvasSize: canvasSize, clamp: false
+                    ) else { return }
+                    beginCanvasInteraction(at: start)
                 }
+                guard isEditingDoubleClick == false else { return }
+                let rawEndpoint = allowsRawDragEndpoint
+                guard let point = mapToImageSpace(
+                    location: value.location, canvasSize: canvasSize,
+                    clamp: rawEndpoint == false, allowOutsideBounds: rawEndpoint
+                ) else { return }
+                if document.selectedTool == .eraser { eraserCursorLocation = value.location }
+                document.updateInteraction(
+                    at: point,
+                    constrainProportions: (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.shift)
+                )
             }
             .onEnded { value in
                 defer {
                     didBeginInteraction = false
                     isEditingDoubleClick = false
                 }
-                guard isEditingDoubleClick == false else {
-                    return
-                }
-
-                let startsErasing = didBeginInteraction == false && document.selectedTool == .eraser
-                let eraserStart = startsErasing ? mapToImageSpace(
-                    location: value.startLocation,
-                    canvasSize: canvasSize,
-                    clamp: false
-                ) : nil
-                guard startsErasing == false || eraserStart != nil else {
-                    return
-                }
-                let allowsRawEndpoint = (didBeginInteraction || startsErasing) &&
-                    (document.selectedTool == .rectangle || document.selectedTool == .ellipse ||
-                        document.selectedTool == .eraser)
-
-                guard let point = mapToImageSpace(
-                    location: value.location,
-                    canvasSize: canvasSize,
-                    clamp: didBeginInteraction && allowsRawEndpoint == false,
-                    allowOutsideBounds: allowsRawEndpoint
-                ) else {
-                    return
-                }
-                if document.selectedTool == .eraser {
-                    eraserCursorLocation = value.location
-                }
-
                 if didBeginInteraction == false {
-                    document.beginInteraction(at: eraserStart ?? point)
+                    guard let start = mapToImageSpace(
+                        location: value.startLocation, canvasSize: canvasSize, clamp: false
+                    ) else { return }
+                    beginCanvasInteraction(at: start)
                 }
+                guard isEditingDoubleClick == false else { return }
+                let rawEndpoint = allowsRawDragEndpoint
+                guard let point = mapToImageSpace(
+                    location: value.location, canvasSize: canvasSize,
+                    clamp: rawEndpoint == false, allowOutsideBounds: rawEndpoint
+                ) else { return }
+                if document.selectedTool == .eraser { eraserCursorLocation = value.location }
                 document.endInteraction(
                     at: point,
                     constrainProportions: (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.shift)
                 )
             }
+    }
+
+    private var allowsRawDragEndpoint: Bool {
+        document.selectedTool == .move || document.selectedTool == .eraser ||
+            document.selectedTool == .rectangle || document.selectedTool == .ellipse
+    }
+
+    private func beginCanvasInteraction(at point: CGPoint) {
+        nativeInput.finishNumberEditing()
+        didBeginInteraction = true
+        // The first delivered drag event may already be far from the original mouse-down.
+        if document.selectedTool == .move, (NSApp.currentEvent?.clickCount ?? 0) == 2,
+           document.beginEditingText(at: point) {
+            isEditingDoubleClick = true
+        } else {
+            document.beginInteraction(at: point)
+        }
     }
 
     private func mapToImageSpace(
@@ -738,7 +820,19 @@ private struct AnnotationCanvasView: View {
     }
 
     private func drawStroke(_ stroke: EditorStroke, in context: inout GraphicsContext) {
-        guard stroke.points.count > 1 else {
+        guard let first = stroke.points.first else {
+            return
+        }
+        if stroke.points.count == 1 {
+            context.fill(
+                Path(ellipseIn: CGRect(
+                    x: first.x - stroke.lineWidth / 2,
+                    y: first.y - stroke.lineWidth / 2,
+                    width: stroke.lineWidth,
+                    height: stroke.lineWidth
+                )),
+                with: .color(Color(nsColor: stroke.color.nsColor))
+            )
             return
         }
 
@@ -756,44 +850,10 @@ private struct AnnotationCanvasView: View {
     }
 
     private func drawArrow(_ arrow: EditorArrow, in context: inout GraphicsContext) {
-        let start = arrow.start
-        let end = arrow.end
-        let width = arrow.lineWidth
-
-        var shaft = Path()
-        shaft.move(to: start)
-        shaft.addLine(to: end)
         context.stroke(
-            shaft,
+            Path(EditorAnnotationGeometry.arrowPath(arrow)),
             with: .color(Color(nsColor: arrow.color.nsColor)),
-            style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
-        )
-
-        let deltaX = end.x - start.x
-        let deltaY = end.y - start.y
-        let angle = atan2(deltaY, deltaX)
-        let headLength = max(width * 2.6, 18)
-        let headAngle = CGFloat.pi / 7
-
-        let left = CGPoint(
-            x: end.x - headLength * cos(angle - headAngle),
-            y: end.y - headLength * sin(angle - headAngle)
-        )
-        let right = CGPoint(
-            x: end.x - headLength * cos(angle + headAngle),
-            y: end.y - headLength * sin(angle + headAngle)
-        )
-
-        var head = Path()
-        head.move(to: end)
-        head.addLine(to: left)
-        head.move(to: end)
-        head.addLine(to: right)
-
-        context.stroke(
-            head,
-            with: .color(Color(nsColor: arrow.color.nsColor)),
-            style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
+            style: StrokeStyle(lineWidth: arrow.lineWidth, lineCap: .round, lineJoin: .round)
         )
     }
 
@@ -862,6 +922,15 @@ private struct AnnotationSelectionOverlayView: View {
                 with: .color(Color.accentColor.opacity(0.95)),
                 lineWidth: 2
             )
+            if let secondaryHandleRect = overlay.secondaryHandleRect {
+                let secondaryHandle = Path(ellipseIn: scale(rect: secondaryHandleRect, size: size))
+                context.fill(secondaryHandle, with: .color(.white))
+                context.stroke(
+                    secondaryHandle,
+                    with: .color(Color.accentColor.opacity(0.95)),
+                    lineWidth: 2
+                )
+            }
         }
     }
 
@@ -879,6 +948,7 @@ private struct PendingTextInsertionOverlay: View {
     let pendingTextInsertion: PendingTextInsertion
     let textBounds: CGRect
     let pixelSize: CGSize
+    let nativeInput: EditorNativeInputState
     let onTextChange: (String) -> Void
     let onCommit: () -> Void
 
@@ -890,6 +960,7 @@ private struct PendingTextInsertionOverlay: View {
             InlineTextEditor(
                 pending: pendingTextInsertion,
                 sourceSize: textBounds.size,
+                nativeInput: nativeInput,
                 onTextChange: onTextChange,
                 onCommit: onCommit
             )
@@ -909,16 +980,23 @@ private struct PendingTextInsertionOverlay: View {
 private struct InlineTextEditor: NSViewRepresentable {
     let pending: PendingTextInsertion
     let sourceSize: CGSize
+    let nativeInput: EditorNativeInputState
     let onTextChange: (String) -> Void
     let onCommit: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onTextChange: onTextChange)
+        Coordinator(nativeInput: nativeInput, sessionID: pending.id, onTextChange: onTextChange)
     }
 
     func makeNSView(context: Context) -> InlineTextEditorHost {
         let host = InlineTextEditorHost(pending: pending, sourceSize: sourceSize)
         host.textView.delegate = context.coordinator
+        host.textView.onBeginEditing = { [weak coordinator = context.coordinator, weak textView = host.textView] in
+            guard let coordinator, let textView else {
+                return
+            }
+            coordinator.beginSession(in: textView)
+        }
         host.textView.onCommit = onCommit
         host.textView.onMarkedTextEnd = { [weak coordinator = context.coordinator, weak textView = host.textView] in
             guard let coordinator, let textView else {
@@ -962,6 +1040,8 @@ private struct InlineTextEditor: NSViewRepresentable {
         host.textView.delegate = nil
         host.textView.onCommit = nil
         host.textView.onMarkedTextEnd = nil
+        host.textView.onBeginEditing = nil
+        coordinator.endSession()
     }
 
     @MainActor
@@ -969,13 +1049,40 @@ private struct InlineTextEditor: NSViewRepresentable {
         var onTextChange: (String) -> Void
         var lastPublishedText = ""
         var pendingStyle: PendingTextInsertion?
+        private let nativeInput: EditorNativeInputState
+        private let sessionID: UUID
         private var appliedFont: EditorTextFont?
         private var appliedFontSize: CGFloat?
         private var appliedColor: EditorColor?
         private let editingUndoManager = UndoManager()
 
-        init(onTextChange: @escaping (String) -> Void) {
+        init(nativeInput: EditorNativeInputState, sessionID: UUID, onTextChange: @escaping (String) -> Void) {
+            self.nativeInput = nativeInput
+            self.sessionID = sessionID
             self.onTextChange = onTextChange
+        }
+
+        func textDidBeginEditing(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else {
+                return
+            }
+            beginSession(in: textView)
+        }
+
+        func beginSession(in textView: NSTextView) {
+            nativeInput.beginSession(
+                id: sessionID,
+                textView: textView,
+                undoManager: editingUndoManager,
+                isAnnotation: true
+            )
+        }
+
+        func endSession() {
+            DispatchQueue.main.async { [nativeInput, sessionID] in
+                nativeInput.endSession(id: sessionID)
+            }
+            editingUndoManager.removeAllActions()
         }
 
         func undoManager(for view: NSTextView) -> UndoManager? {
@@ -992,6 +1099,7 @@ private struct InlineTextEditor: NSViewRepresentable {
                 to: textView,
                 force: editingUndoManager.isUndoing || editingUndoManager.isRedoing
             )
+            nativeInput.refreshNextTurn()
         }
 
         func applyStyle(to textView: NSTextView, force: Bool = false) {
@@ -1106,6 +1214,15 @@ private final class InlineTextEditorHost: NSView {
 private final class InlineAnnotationTextView: NSTextView {
     var onCommit: (() -> Void)?
     var onMarkedTextEnd: (() -> Void)?
+    var onBeginEditing: (() -> Void)?
+
+    override func becomeFirstResponder() -> Bool {
+        let becameFirstResponder = super.becomeFirstResponder()
+        if becameFirstResponder {
+            onBeginEditing?()
+        }
+        return becameFirstResponder
+    }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 || isCommitShortcut(event) {
@@ -1140,5 +1257,455 @@ private final class InlineAnnotationTextView: NSTextView {
     private func finishEditing() {
         unmarkText()
         onCommit?()
+    }
+}
+
+/// Shares only this editor's native input history with its sidebar and shortcut handler.
+@MainActor
+private final class EditorNativeInputState: ObservableObject {
+    @Published private(set) var hasActiveInput = false
+    @Published private(set) var canUndo = false
+    @Published private(set) var canRedo = false
+    @Published private(set) var undoActionName = ""
+    @Published private(set) var redoActionName = ""
+
+    private final class Session {
+        let id: UUID
+        weak var textView: NSTextView?
+        let undoManager: UndoManager
+
+        init(id: UUID, textView: NSTextView, undoManager: UndoManager) {
+            self.id = id
+            self.textView = textView
+            self.undoManager = undoManager
+        }
+    }
+
+    private var annotationSession: Session?
+    private var numberSession: Session?
+    private var observers: [NSObjectProtocol] = []
+    private var activeSession: Session? { numberSession ?? annotationSession }
+
+    deinit {
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    func beginSession(id: UUID, textView: NSTextView, undoManager: UndoManager, isAnnotation: Bool) {
+        let session = Session(id: id, textView: textView, undoManager: undoManager)
+        if isAnnotation {
+            annotationSession = session
+        } else {
+            numberSession = session
+        }
+        observeActiveSession()
+        refresh()
+    }
+
+    func endSession(id: UUID) {
+        if annotationSession?.id == id {
+            annotationSession = nil
+        }
+        if numberSession?.id == id {
+            numberSession = nil
+        }
+        observeActiveSession()
+        refresh()
+    }
+
+    func finishNumberEditing() {
+        if let numberView = numberSession?.textView {
+            numberView.unmarkText()
+            numberView.window?.makeFirstResponder(nil)
+        }
+    }
+
+    func finishAnnotationEditing() {
+        finishNumberEditing()
+        if let session = annotationSession {
+            session.textView?.unmarkText()
+            session.textView?.window?.makeFirstResponder(nil)
+            endSession(id: session.id)
+        }
+    }
+
+    func refreshNextTurn() {
+        DispatchQueue.main.async { [weak self] in
+            self?.refresh()
+        }
+    }
+
+    func undo() {
+        performHistory(isRedo: false)
+    }
+
+    func redo() {
+        performHistory(isRedo: true)
+    }
+
+    func performHistory(isRedo: Bool, in textView: NSTextView? = nil) {
+        guard let view = textView ?? activeSession?.textView, view.window != nil,
+              let manager = textView?.undoManager ?? activeSession?.undoManager else {
+            refresh()
+            return
+        }
+        view.window?.makeFirstResponder(view)
+        view.breakUndoCoalescing()
+        if isRedo {
+            if manager.canRedo {
+                manager.redo()
+            }
+        } else if manager.canUndo {
+            manager.undo()
+        }
+        refresh()
+    }
+
+    private func refresh() {
+        let session = activeSession
+        let manager = session?.textView?.window == nil ? nil : session?.undoManager
+        hasActiveInput = manager != nil
+        canUndo = manager?.canUndo == true
+        canRedo = manager?.canRedo == true
+        undoActionName = canUndo ? manager?.undoActionName ?? "" : ""
+        redoActionName = canRedo ? manager?.redoActionName ?? "" : ""
+    }
+
+    private func observeActiveSession() {
+        for observer in observers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        observers.removeAll()
+        guard let manager = activeSession?.undoManager else {
+            return
+        }
+        for name in [
+            Notification.Name.NSUndoManagerDidCloseUndoGroup,
+            Notification.Name.NSUndoManagerDidUndoChange,
+            Notification.Name.NSUndoManagerDidRedoChange,
+        ] {
+            observers.append(NotificationCenter.default.addObserver(
+                forName: name,
+                object: manager,
+                queue: .main
+            ) { [weak self] _ in
+                DispatchQueue.main.async { [weak self] in
+                    self?.refresh()
+                }
+            })
+        }
+    }
+}
+
+/// Attaching this view, not an app controller, installs window-local editor shortcuts.
+private struct EditorKeyboardMonitorView: NSViewRepresentable {
+    let document: EditorDocument
+    let nativeInput: EditorNativeInputState
+    let onCopy: () -> Void
+
+    func makeNSView(context: Context) -> EditorKeyboardMonitorHost {
+        let host = EditorKeyboardMonitorHost()
+        updateNSView(host, context: context)
+        return host
+    }
+
+    func updateNSView(_ host: EditorKeyboardMonitorHost, context: Context) {
+        host.handleKey = { [weak document, weak nativeInput] event, window in
+            guard let document, let nativeInput else {
+                return event
+            }
+            let modifiers = event.modifierFlags.intersection([.command, .shift, .control, .option])
+            let nativeTextView = window.firstResponder as? NSTextView
+            let hasNativeInput = nativeTextView != nil ||
+                window.firstResponder is NSTextField || nativeInput.hasActiveInput ||
+                document.pendingTextInsertion != nil
+
+            if modifiers == .command || modifiers == [.command, .shift] {
+                if event.keyCode == 6 || event.charactersIgnoringModifiers?.lowercased() == "z" {
+                    let isRedo = modifiers.contains(.shift)
+                    if hasNativeInput {
+                        nativeInput.performHistory(isRedo: isRedo, in: nativeTextView)
+                    } else if isRedo {
+                        document.redo()
+                    } else {
+                        document.undo()
+                    }
+                    return nil
+                }
+                if modifiers == .command,
+                   (event.keyCode == 2 || event.charactersIgnoringModifiers?.lowercased() == "d"),
+                   hasNativeInput == false {
+                    if event.isARepeat == false {
+                        document.duplicateSelectedAnnotation()
+                    }
+                    return nil
+                }
+            }
+
+            if event.keyCode == 53, nativeTextView == nil,
+               document.pendingTextInsertion != nil,
+               modifiers.intersection([.command, .control, .option]).isEmpty {
+                nativeInput.finishAnnotationEditing()
+                _ = document.handleEscape()
+                return nil
+            }
+
+            guard modifiers.intersection([.command, .control, .option]).isEmpty,
+                  hasNativeInput == false else {
+                return event
+            }
+            switch event.keyCode {
+            case 36, 76:
+                if document.beginEditingSelectedText() {
+                    return nil
+                }
+            case 51, 117:
+                if event.isARepeat == false, document.deleteSelectedAnnotation() {
+                    return nil
+                }
+            case 53:
+                if document.handleEscape() == false {
+                    onCopy()
+                }
+                return nil
+            default:
+                break
+            }
+            return event
+        }
+    }
+
+    static func dismantleNSView(_ host: EditorKeyboardMonitorHost, coordinator: ()) {
+        host.removeMonitor()
+        host.handleKey = nil
+    }
+}
+
+private final class EditorKeyboardMonitorHost: NSView {
+    var handleKey: ((NSEvent, NSWindow) -> NSEvent?)?
+    private var keyboardMonitor: Any?
+    private var closeObserver: NSObjectProtocol?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        removeMonitor()
+        guard let window else {
+            return
+        }
+        keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, let window = self.window, event.window === window else {
+                return event
+            }
+            guard let handleKey = self.handleKey else {
+                return event
+            }
+            return handleKey(event, window)
+        }
+        closeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.removeMonitor()
+        }
+    }
+
+    func removeMonitor() {
+        if let keyboardMonitor {
+            NSEvent.removeMonitor(keyboardMonitor)
+            self.keyboardMonitor = nil
+        }
+        if let closeObserver {
+            NotificationCenter.default.removeObserver(closeObserver)
+            self.closeObserver = nil
+        }
+    }
+
+    deinit {
+        if let keyboardMonitor {
+            NSEvent.removeMonitor(keyboardMonitor)
+        }
+        if let closeObserver {
+            NotificationCenter.default.removeObserver(closeObserver)
+        }
+    }
+}
+
+/// A single-line native input with a fresh undo manager for each focus session.
+private struct EditorNumberField: NSViewRepresentable {
+    let value: Double
+    let nativeInput: EditorNativeInputState
+    let onChange: (Double) -> Void
+    let onBeginEditing: () -> Void
+    let onEndEditing: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(field: self)
+    }
+
+    func makeNSView(context: Context) -> EditorNumberTextView {
+        let view = EditorNumberTextView(initialValue: context.coordinator.formatted(value))
+        view.delegate = context.coordinator
+        view.onBeginEditing = { [weak coordinator = context.coordinator, weak view] in
+            guard let view else { return }
+            coordinator?.beginEditing(view)
+        }
+        view.onEndEditing = { [weak coordinator = context.coordinator, weak view] in
+            guard let view else { return }
+            coordinator?.endEditing(view)
+        }
+        view.setAccessibilityLabel("Text size in image pixels")
+        return view
+    }
+
+    func updateNSView(_ view: EditorNumberTextView, context: Context) {
+        context.coordinator.field = self
+        if context.coordinator.isEditing == false {
+            view.string = context.coordinator.formatted(value)
+        }
+    }
+
+    static func dismantleNSView(_ view: EditorNumberTextView, coordinator: Coordinator) {
+        view.onBeginEditing = nil
+        view.onEndEditing = nil
+        view.delegate = nil
+        DispatchQueue.main.async {
+            coordinator.endEditing(view)
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var field: EditorNumberField
+        private(set) var isEditing = false
+        private var sessionID = UUID()
+        private let editingUndoManager = UndoManager()
+        private let formatter: NumberFormatter = {
+            let formatter = NumberFormatter()
+            formatter.numberStyle = .decimal
+            formatter.minimumFractionDigits = 0
+            formatter.maximumFractionDigits = 1
+            return formatter
+        }()
+
+        init(field: EditorNumberField) {
+            self.field = field
+        }
+
+        func formatted(_ value: Double) -> String {
+            formatter.string(from: NSNumber(value: value)) ?? String(value)
+        }
+
+        func beginEditing(_ view: NSTextView) {
+            guard isEditing == false else { return }
+            isEditing = true
+            sessionID = UUID()
+            editingUndoManager.removeAllActions()
+            field.onBeginEditing()
+            field.nativeInput.beginSession(
+                id: sessionID,
+                textView: view,
+                undoManager: editingUndoManager,
+                isAnnotation: false
+            )
+        }
+
+        func endEditing(_ view: NSTextView) {
+            guard isEditing else { return }
+            isEditing = false
+            view.breakUndoCoalescing()
+            view.string = formatted(field.value)
+            field.onEndEditing()
+            field.nativeInput.endSession(id: sessionID)
+            editingUndoManager.removeAllActions()
+        }
+
+        func undoManager(for view: NSTextView) -> UndoManager? {
+            editingUndoManager
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let view = notification.object as? NSTextView else { return }
+            if view.hasMarkedText() == false, let number = formatter.number(from: view.string) {
+                field.onChange(number.doubleValue)
+            }
+            field.nativeInput.refreshNextTurn()
+        }
+
+        func textView(
+            _ textView: NSTextView,
+            shouldChangeTextIn affectedCharRange: NSRange,
+            replacementString: String?
+        ) -> Bool {
+            replacementString?.rangeOfCharacter(from: .newlines) == nil
+        }
+    }
+}
+
+private final class EditorNumberTextView: NSTextView {
+    var onBeginEditing: (() -> Void)?
+    var onEndEditing: (() -> Void)?
+    private let backingTextStorage: NSTextStorage
+
+    init(initialValue: String) {
+        let storage = NSTextStorage()
+        let manager = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: 58, height: CGFloat.greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        manager.addTextContainer(container)
+        storage.addLayoutManager(manager)
+        backingTextStorage = storage
+        super.init(frame: CGRect(x: 0, y: 0, width: 58, height: 24), textContainer: container)
+        string = initialValue
+        isRichText = false
+        importsGraphics = false
+        allowsUndo = true
+        drawsBackground = false
+        font = .systemFont(ofSize: 12)
+        textColor = .labelColor
+        alignment = .right
+        textContainerInset = CGSize(width: 3, height: 4)
+        isHorizontallyResizable = false
+        isVerticallyResizable = false
+        textContainer?.widthTracksTextView = true
+        textContainer?.maximumNumberOfLines = 1
+        textContainer?.lineBreakMode = .byClipping
+        isAutomaticQuoteSubstitutionEnabled = false
+        isAutomaticDashSubstitutionEnabled = false
+        isAutomaticTextReplacementEnabled = false
+        isContinuousSpellCheckingEnabled = false
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let becameFirstResponder = super.becomeFirstResponder()
+        if becameFirstResponder {
+            onBeginEditing?()
+        }
+        return becameFirstResponder
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned {
+            onEndEditing?()
+        }
+        return resigned
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 36 || event.keyCode == 76 || event.keyCode == 53 || event.keyCode == 48 {
+            unmarkText()
+            window?.makeFirstResponder(nil)
+            return
+        }
+        super.keyDown(with: event)
     }
 }

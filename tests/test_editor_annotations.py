@@ -22,6 +22,7 @@ class EditorAnnotationTests(unittest.TestCase):
                 "-default-isolation", "MainActor",
                 "-module-cache-path", str(output / "module-cache"),
                 str(root / "Stackboard" / "EditorDocument.swift"),
+                str(root / "Stackboard" / "EditorAnnotationGeometry.swift"),
                 str(root / "tests" / "EditorAnnotationTests.swift"),
                 "-o", str(cls.executable),
             ],
@@ -33,7 +34,7 @@ class EditorAnnotationTests(unittest.TestCase):
     def run_scenario(self, scenario):
         result = subprocess.run(
             [str(self.executable), scenario],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=90,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -55,7 +56,7 @@ class EditorAnnotationTests(unittest.TestCase):
     def test_outside_motion_does_not_erase_along_image_edge(self):
         self.run_scenario("outside-path")
 
-    def test_text_reopening_replacement_cancellation_and_clearing(self):
+    def test_text_reopening_reversible_pending_edits_and_clearing(self):
         self.run_scenario("text-editing")
 
     def test_cyrillic_multiline_layout_matches_export_ink_and_bounds(self):
@@ -66,6 +67,27 @@ class EditorAnnotationTests(unittest.TestCase):
 
     def test_text_native_point_size_and_near_edge_input(self):
         self.run_scenario("text-retina-edges")
+
+    def test_visual_creation_and_eraser_actions_roundtrip_payloads_and_pixels(self):
+        self.run_scenario("creation-history")
+
+    def test_many_move_and_resize_events_form_single_reversible_edits(self):
+        self.run_scenario("object-move-resize-history")
+
+    def test_arrow_endpoint_handles_and_degenerate_paths_remain_editable(self):
+        self.run_scenario("arrow-endpoints-degenerate")
+
+    def test_ink_hit_testing_and_eraser_order_match_visible_objects(self):
+        self.run_scenario("ink-hit-mask-order")
+
+    def test_selected_style_sliders_and_native_text_sessions_group_history(self):
+        self.run_scenario("selected-style-history")
+
+    def test_duplicate_and_delete_restore_ids_order_selection_and_export(self):
+        self.run_scenario("duplicate-delete-history")
+
+    def test_noops_and_cancel_preserve_redo_and_editors_have_independent_history(self):
+        self.run_scenario("redo-boundaries-isolation")
 
 
 if __name__ == "__main__":

@@ -64,8 +64,9 @@ private func same(_ a: NSBitmapImageRep, _ b: NSBitmapImageRep, at point: CGPoin
 
 @MainActor
 private func rectangle(_ document: EditorDocument, color: EditorColor = .red) {
+    _ = document.handleEscape()
     document.activateTool(.rectangle)
-    document.shapeStyle = .filled
+    document.setShapeStyle(.filled)
     document.applySelectedColor(color)
     document.beginInteraction(at: CGPoint(x: 80, y: 80))
     document.endInteraction(at: CGPoint(x: 420, y: 280))
@@ -115,7 +116,7 @@ private func outsidePath() throws {
     let document = EditorDocument(baseImage: makeImage())
     let original = try pixels(document)
     document.activateTool(.rectangle)
-    document.shapeStyle = .filled
+    document.setShapeStyle(.filled)
     document.beginInteraction(at: .zero)
     document.endInteraction(at: CGPoint(x: 640, y: 400))
     let before = try pixels(document)
@@ -144,9 +145,9 @@ private func ordering() throws {
     rectangle(document, color: .green)
     let repainted = try pixels(document)
     try expect(distance(color(repainted, point), color(erased, point)) > 0.1, "Earlier eraser also erased later drawing")
-    document.undoLastAnnotation()
+    document.undo()
     try same(try pixels(document), erased, at: point, "Undo of later drawing changed the erasure")
-    document.undoLastAnnotation()
+    document.undo()
     try same(try pixels(document), before, at: point, "Undo did not restore both erased annotations")
 }
 
@@ -161,7 +162,7 @@ private func cancellation() throws {
     document.eraserWidth = 32
     document.beginInteraction(at: center)
     try same(try pixels(document), original, at: center, "Live eraser dot was missing from export")
-    document.undoLastAnnotation()
+    document.undo()
     try same(try pixels(document), before, at: center, "Undo of active erasing removed the previous annotation")
     document.beginInteraction(at: center)
     document.updateInteraction(at: CGPoint(x: 320, y: 160))
@@ -175,7 +176,7 @@ private func cancellation() throws {
     let dotted = try pixels(document)
     try same(dotted, original, at: center, "Click did not erase a circular brush footprint")
     try same(dotted, before, at: CGPoint(x: 258, y: 160), "Click brush erased beyond its radius")
-    document.undoLastAnnotation()
+    document.undo()
     try same(try pixels(document), before, at: center, "Undo did not restore a click erasure")
 }
 
@@ -184,7 +185,7 @@ private func annotationTypes() throws {
     for kind in ["pen", "arrow", "rectangle-outline", "rectangle-filled", "ellipse-outline", "ellipse-filled", "blur", "text"] {
         let document = EditorDocument(baseImage: makeImage())
         let original = try pixels(document)
-        document.lineWidth = 16
+        document.setLineWidthControlValue(16)
         if kind == "text" {
             document.activateTool(.text)
             document.setTextSizeControlValue(48)
@@ -199,7 +200,7 @@ private func annotationTypes() throws {
             else if kind == "blur" { tool = .blur }
             else { tool = .pen }
             document.activateTool(tool)
-            document.shapeStyle = kind.hasSuffix("filled") ? .filled : .outline
+            document.setShapeStyle(kind.hasSuffix("filled") ? .filled : .outline)
             document.beginInteraction(at: CGPoint(x: 100, y: 100))
             document.updateInteraction(at: CGPoint(x: 400, y: 260))
             document.endInteraction(at: CGPoint(x: 400, y: 260))
@@ -220,7 +221,7 @@ private func annotationTypes() throws {
         let after = try pixels(document)
         try same(after, original, at: target, "Could not erase \(kind)")
         try same(after, before, at: untouched, "Partial erasing deleted the entire \(kind)")
-        document.undoLastAnnotation()
+        document.undo()
         try same(try pixels(document), before, at: target, "Undo could not restore \(kind)")
     }
 }
@@ -392,7 +393,7 @@ private func textEditingLifecycle() throws {
     let later = try addText(document, "Позже", at: CGPoint(x: 80, y: 300), size: 24)
     let originalOrder = document.annotations.map(\.id)
     let beforeEditing = try pixels(document)
-    let hit = CGPoint(x: origin.x + 20, y: origin.y + 14)
+    let hit = CGPoint(x: origin.x + 20, y: origin.y + 50)
     document.beginInteraction(at: hit)
     try expect(document.pendingTextInsertion?.annotationID == original.id, "Text-tool click created a duplicate instead of reopening text")
     try expect(document.pendingTextInsertion?.text == originalText, "Reopening lost the exact text contents")
@@ -405,22 +406,28 @@ private func textEditingLifecycle() throws {
     document.setTextSizeControlValue(44)
     document.setTextFont(.serif)
     document.applySelectedColor(.blue)
-    document.undoLastAnnotation()
+    document.undo()
     let restored = try textAnnotation(document, id: original.id)
-    try expect(document.pendingTextInsertion == nil, "Undo did not cancel text editing")
-    try expect(document.annotations.map(\.id) == originalOrder, "Cancelling text editing removed or reordered an object")
+    try expect(document.pendingTextInsertion == nil, "Undo left text input open")
+    try expect(document.annotations.map(\.id) == originalOrder, "Undoing text editing removed or reordered an object")
+    try expect(restored == original, "Undoing text editing leaked pending content or typography")
+    try expect(try changedPixels(pixels(document), from: beforeEditing).isEmpty, "Undoing text editing changed exported pixels")
+    try expect(document.canRedo, "Undo discarded the changed native text session instead of making it redoable")
+    document.redo()
+    let redone = try textAnnotation(document, id: original.id)
     try expect(
-        restored.text == originalText && restored.color == original.color
-            && restored.font == original.font && restored.fontSize == original.fontSize,
-        "Cancelling text editing leaked uncommitted content or typography into the object"
+        redone.text == "Отменённая замена" && redone.color == .blue
+            && redone.font == .serif && redone.fontSize == 44,
+        "Redo did not recover the entire pending text session"
     )
-    try expect(try changedPixels(pixels(document), from: beforeEditing).isEmpty, "Cancelling editing changed exported pixels")
+    try expect(document.annotations.map(\.id) == originalOrder, "Redoing text editing changed object order")
+    document.undo()
 
     document.activateTool(.move)
     document.beginInteraction(at: hit)
     document.endInteraction(at: hit)
     try expect(document.beginEditingSelectedText(), "Selected text could not be reopened")
-    try expect(document.deleteSelectedText() == false, "Object deletion consumed a native text-editing session")
+    try expect(document.deleteSelectedAnnotation() == false, "Object deletion consumed a native text-editing session")
     let replacement = "  Изменено\n\nНовый мир \t\n"
     document.setPendingText(replacement)
     document.commitPendingTextInsertion()
@@ -648,6 +655,723 @@ private func textRetinaAndImageEdges() throws {
     }
 }
 
+private let visualKinds = [
+    "stroke", "arrow", "rectangle-outline", "rectangle-filled",
+    "ellipse-outline", "ellipse-filled", "blur", "text",
+]
+
+@MainActor
+private func expectSamePixels(_ actual: NSBitmapImageRep, _ expected: NSBitmapImageRep, _ message: String) throws {
+    try expect(
+        actual.pixelsWide == expected.pixelsWide && actual.pixelsHigh == expected.pixelsHigh
+            && actual.bitsPerPixel == expected.bitsPerPixel && actual.bitmapFormat == expected.bitmapFormat,
+        "\(message): bitmap format changed"
+    )
+    guard let actualBytes = actual.bitmapData, let expectedBytes = expected.bitmapData else {
+        throw Failure.check("\(message): missing bitmap bytes")
+    }
+    let rowBytes = actual.pixelsWide * actual.bitsPerPixel / 8
+    for row in 0..<actual.pixelsHigh {
+        let left = UnsafeBufferPointer(start: actualBytes.advanced(by: row * actual.bytesPerRow), count: rowBytes)
+        let right = UnsafeBufferPointer(start: expectedBytes.advanced(by: row * expected.bytesPerRow), count: rowBytes)
+        try expect(left.elementsEqual(right), "\(message): pixels differ on row \(row)")
+    }
+}
+
+@MainActor
+private func annotation(_ document: EditorDocument, id: UUID) throws -> EditorAnnotation {
+    guard let result = document.annotations.first(where: { $0.id == id }) else {
+        throw Failure.check("Object \(id) disappeared")
+    }
+    return result
+}
+
+@MainActor
+private func selectedOverlay(_ document: EditorDocument) throws -> EditorSelectionOverlay {
+    guard let result = document.selectionOverlay else { throw Failure.check("Missing object selection overlay") }
+    return result
+}
+
+@MainActor
+private func drag(
+    _ document: EditorDocument, from start: CGPoint, to end: CGPoint, constrained: Bool = false
+) {
+    document.beginInteraction(at: start)
+    for step in 1...12 {
+        let progress = CGFloat(step) / 12
+        document.updateInteraction(
+            at: CGPoint(x: start.x + (end.x - start.x) * progress, y: start.y + (end.y - start.y) * progress),
+            constrainProportions: constrained
+        )
+    }
+    document.endInteraction(at: end, constrainProportions: constrained)
+}
+
+@MainActor
+private func selectObject(_ document: EditorDocument, at point: CGPoint) {
+    document.activateTool(.move)
+    document.beginInteraction(at: point)
+    document.endInteraction(at: point)
+}
+
+@MainActor
+private func objectGrab(_ kind: String) -> CGPoint {
+    switch kind {
+    case "stroke": return CGPoint(x: 180, y: 150)
+    case "rectangle-outline", "ellipse-outline": return CGPoint(x: 200, y: 100)
+    case "text": return CGPoint(x: 110, y: 110)
+    default: return CGPoint(x: 200, y: 160)
+    }
+}
+
+@MainActor
+@discardableResult
+private func createVisual(_ document: EditorDocument, kind: String) throws -> EditorAnnotation {
+    _ = document.handleEscape()
+    if kind == "text" {
+        try addText(document, "Object\nhistory", at: CGPoint(x: 100, y: 100), size: 24)
+    } else {
+        let tool: EditorTool
+        switch kind {
+        case "stroke": tool = .pen
+        case "arrow": tool = .arrow
+        case "blur": tool = .blur
+        default: tool = kind.hasPrefix("ellipse") ? .ellipse : .rectangle
+        }
+        document.activateTool(tool)
+        document.setLineWidthControlValue(12)
+        document.setShapeStyle(kind.hasSuffix("filled") ? .filled : .outline)
+        document.applySelectedColor(.red)
+        document.setBlurControlValue(12)
+        document.beginInteraction(at: CGPoint(x: 100, y: 100))
+        document.updateInteraction(at: CGPoint(x: 180, y: 150))
+        document.endInteraction(at: CGPoint(x: 300, y: 220))
+    }
+    guard let result = document.annotations.last else { throw Failure.check("Could not create \(kind)") }
+    return result
+}
+
+@MainActor
+private func expectTranslated(_ actual: EditorAnnotation, from original: EditorAnnotation, by delta: CGSize) throws {
+    func shifted(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: point.x + delta.width, y: point.y + delta.height)
+    }
+    try expect(actual.id == original.id, "Moving an object changed its UUID")
+    switch (original, actual) {
+    case let (.stroke(before), .stroke(after)):
+        var expected = before
+        expected.points = before.points.map(shifted)
+        try expect(after == expected, "Moving a stroke distorted points, width, or color")
+    case let (.arrow(before), .arrow(after)):
+        var expected = before
+        expected.start = shifted(before.start)
+        expected.end = shifted(before.end)
+        try expect(after == expected, "Moving an arrow distorted endpoints or style")
+    case let (.shape(before), .shape(after)):
+        var expected = before
+        expected.rect.origin = shifted(before.rect.origin)
+        try expect(after == expected, "Moving a shape changed dimensions or style")
+    case let (.blur(before), .blur(after)):
+        var expected = before
+        expected.rect.origin = shifted(before.rect.origin)
+        try expect(after == expected, "Moving a blur changed dimensions or strength")
+    case let (.text(before), .text(after)):
+        var expected = before
+        expected.origin = shifted(before.origin)
+        try expect(after == expected, "Moving text changed contents or typography")
+    default:
+        throw Failure.check("Moving changed the annotation type")
+    }
+}
+
+@MainActor
+private func creationHistory() throws {
+    for kind in visualKinds + ["eraser"] {
+        let document = EditorDocument(baseImage: makeImage())
+        let background = try pixels(document)
+        try expect(
+            document.canUndo == false && document.canRedo == false
+                && document.undoActionName.isEmpty && document.redoActionName.isEmpty,
+            "A new editor started with history"
+        )
+        if kind == "eraser" {
+            rectangle(document)
+        } else {
+            document.setLineWidthControlValue(9)
+            document.setShapeStyle(.filled)
+            document.applySelectedColor(.green)
+            document.setBlurControlValue(18)
+            document.setTextFont(.serif)
+            document.setTextSizeControlValue(22)
+            try expect(document.canUndo == false, "Changing future drawing settings created history")
+        }
+        let before = document.annotations
+        let beforePixels = try pixels(document)
+        if kind == "eraser" {
+            erase(document, from: CGPoint(x: 120, y: 160), to: CGPoint(x: 360, y: 160))
+        } else {
+            try createVisual(document, kind: kind)
+        }
+        let created = document.annotations
+        let createdPixels = try pixels(document)
+        try expect(document.canUndo && document.undoActionName.isEmpty == false, "Creation did not name an undo action for \(kind)")
+        try expect(try changedPixels(createdPixels, from: beforePixels).isEmpty == false, "Creating \(kind) did not affect export")
+        if kind == "eraser" {
+            try same(createdPixels, background, at: CGPoint(x: 240, y: 160), "An eraser action did not expose source pixels")
+        }
+        document.undo()
+        try expect(document.annotations == before, "Undo did not remove exactly the created \(kind)")
+        try expect(document.canRedo && document.redoActionName.isEmpty == false, "Creation undo was not redoable for \(kind)")
+        try expectSamePixels(pixels(document), beforePixels, "Undo changed the previous \(kind) composite")
+        if before.isEmpty { try expect(document.canUndo == false, "One \(kind) creation produced multiple history entries") }
+        document.redo()
+        try expect(document.annotations == created, "Redo changed \(kind) payloads, IDs, or ordering")
+        try expect(document.canRedo == false && document.redoActionName.isEmpty, "Redo left a stale next action")
+        try expectSamePixels(pixels(document), createdPixels, "Redo did not reproduce \(kind) export")
+        if kind == "eraser" {
+            selectObject(document, at: CGPoint(x: 240, y: 160))
+            try expect(document.selectedAnnotation == nil, "An eraser action became a selectable object")
+        }
+    }
+}
+
+@MainActor
+private func objectMoveResizeHistory() throws {
+    for kind in visualKinds {
+        let document = EditorDocument(baseImage: makeImage())
+        let sourcePixels = try pixels(document)
+        let original = try createVisual(document, kind: kind)
+        erase(document, from: CGPoint(x: 80, y: 190), to: CGPoint(x: 460, y: 190), width: 20)
+        let eraser = document.annotations.last!
+        let beforePixels = try pixels(document)
+        let grab = objectGrab(kind)
+        selectObject(document, at: grab)
+        try expect(document.selectedAnnotation?.id == original.id, "Move tool could not select \(kind)")
+        let originalSelection = document.selectedAnnotation
+        let delta = CGSize(width: 23, height: 17)
+        drag(document, from: grab, to: CGPoint(x: grab.x + delta.width, y: grab.y + delta.height))
+        let moved = try annotation(document, id: original.id)
+        try expectTranslated(moved, from: original, by: delta)
+        try expect(document.annotations == [moved, eraser], "Moving \(kind) changed its index relative to a later mask")
+        let movedPixels = try pixels(document)
+        try expect(try changedPixels(movedPixels, from: beforePixels).isEmpty == false, "Moving \(kind) did not change export")
+        if kind == "rectangle-filled" {
+            try same(movedPixels, sourcePixels, at: CGPoint(x: 240, y: 190), "Moving a shape lifted it above its later eraser")
+        }
+        document.undo()
+        try expect(document.annotations == [original, eraser] && document.selectedAnnotation == originalSelection, "One undo did not restore the whole \(kind) drag and selection")
+        try expectSamePixels(pixels(document), beforePixels, "Move undo did not restore \(kind) ink")
+        document.redo()
+        try expect(document.annotations == [moved, eraser], "Move redo did not restore exact \(kind) geometry and index")
+        try expectSamePixels(pixels(document), movedPixels, "Move redo changed \(kind) export")
+        if kind == "arrow" { continue }
+
+        let overlay = try selectedOverlay(document)
+        let offCenterGrab = CGPoint(x: overlay.handleRect.midX - 3, y: overlay.handleRect.midY + 2)
+        drag(document, from: offCenterGrab, to: offCenterGrab)
+        try expect(document.annotations == [moved, eraser], "An off-center zero-motion \(kind) resize snapped geometry")
+        let resizeDestination = CGPoint(
+            x: offCenterGrab.x + (kind == "text" ? -90 : 35),
+            y: offCenterGrab.y + 27
+        )
+        drag(document, from: offCenterGrab, to: resizeDestination)
+        let resized = try annotation(document, id: original.id)
+        let resizedBounds = try selectedOverlay(document).rect
+        try expect(resized != moved && resized.id == moved.id, "Resizing \(kind) did not preserve and change the selected object")
+        try expect(resized.lineWidth == moved.lineWidth, "Resizing \(kind) scaled its line width")
+        try expect(document.annotations == [resized, eraser], "Resizing \(kind) changed its index relative to a later mask")
+        if case let .text(before) = moved, case let .text(after) = resized {
+            try expect(
+                after.origin == before.origin && abs(after.width - (before.width - 90)) < 0.01
+                    && after.fontSize == before.fontSize && after.font == before.font && after.text == before.text,
+                "Text width dragging moved the origin or scaled its contents"
+            )
+        } else {
+            try expect(
+                abs(resizedBounds.minX - overlay.rect.minX) < 0.01
+                    && abs(resizedBounds.minY - overlay.rect.minY) < 0.01
+                    && abs(resizedBounds.width - overlay.rect.width - 35) < 0.01
+                    && abs(resizedBounds.height - overlay.rect.height - 27) < 0.01,
+                "Resizing \(kind) ignored the corner's pointer offset"
+            )
+        }
+        let resizedPixels = try pixels(document)
+        if kind == "rectangle-filled" {
+            try same(resizedPixels, sourcePixels, at: CGPoint(x: 240, y: 190), "Resizing a shape lifted it above its later eraser")
+        }
+        document.undo()
+        try expect(document.annotations == [moved, eraser], "One undo did not restore all \(kind) resize events")
+        try expectSamePixels(pixels(document), movedPixels, "Resize undo changed \(kind) export")
+        document.redo()
+        try expect(document.annotations == [resized, eraser], "Resize redo changed \(kind) payload or index")
+        try expectSamePixels(pixels(document), resizedPixels, "Resize redo changed \(kind) export")
+        document.undo()
+        document.undo()
+        try expect(document.annotations == [original, eraser], "Zero-motion handle drag added a hidden history entry for \(kind)")
+        document.undo()
+        try expect(document.annotations == [original], "Undo eraser did not preserve the original \(kind)")
+        document.undo()
+        try expect(document.annotations.isEmpty && document.canUndo == false, "Drag events fragmented \(kind) history")
+    }
+}
+
+@MainActor
+private func arrowEndpointsAndDegenerateGeometry() throws {
+    let document = EditorDocument(baseImage: makeImage())
+    let original = try createVisual(document, kind: "arrow")
+    selectObject(document, at: objectGrab("arrow"))
+    guard case let .arrow(initial) = original else { throw Failure.check("Missing arrow fixture") }
+    var overlay = try selectedOverlay(document)
+    try expect(
+        CGPoint(x: overlay.handleRect.midX, y: overlay.handleRect.midY) == initial.end,
+        "The primary arrow handle is not the end point"
+    )
+    guard let startHandle = overlay.secondaryHandleRect else { throw Failure.check("Arrow has no start-point handle") }
+    try expect(CGPoint(x: startHandle.midX, y: startHandle.midY) == initial.start, "Arrow start handle missed its endpoint")
+    let grab = CGPoint(x: startHandle.midX + 3, y: startHandle.midY - 2)
+    drag(document, from: grab, to: grab)
+    try expect(document.annotations == [original], "A zero-motion arrow endpoint grab snapped the arrow")
+    drag(document, from: grab, to: CGPoint(x: grab.x - 24, y: grab.y + 31))
+    guard case let .arrow(startChanged) = try annotation(document, id: original.id) else {
+        throw Failure.check("Arrow start editing changed its type")
+    }
+    try expect(
+        startChanged.start == CGPoint(x: initial.start.x - 24, y: initial.start.y + 31)
+            && startChanged.end == initial.end && startChanged.lineWidth == initial.lineWidth
+            && startChanged.color == initial.color && startChanged.id == initial.id,
+        "Dragging the start handle moved the wrong endpoint or lost its pointer offset"
+    )
+    let afterStart = document.annotations
+    overlay = try selectedOverlay(document)
+    let endGrab = CGPoint(x: overlay.handleRect.midX - 4, y: overlay.handleRect.midY + 2)
+    drag(document, from: endGrab, to: CGPoint(x: endGrab.x + 42, y: endGrab.y - 19))
+    guard case let .arrow(endChanged) = try annotation(document, id: original.id) else {
+        throw Failure.check("Arrow end editing changed its type")
+    }
+    try expect(
+        endChanged.start == startChanged.start
+            && endChanged.end == CGPoint(x: initial.end.x + 42, y: initial.end.y - 19),
+        "Dragging the end handle changed the start or lost the grab offset"
+    )
+    let afterBoth = document.annotations
+    let bothPixels = try pixels(document)
+    document.undo()
+    try expect(document.annotations == afterStart, "Arrow end drag was not one history entry")
+    document.undo()
+    try expect(document.annotations == [original], "Arrow start drag was not one history entry")
+    document.redo()
+    document.redo()
+    try expect(document.annotations == afterBoth, "Arrow endpoint redo did not preserve exact geometry")
+    try expectSamePixels(pixels(document), bothPixels, "Redo changed arrow-head export")
+
+    let head = EditorDocument(baseImage: makeImage())
+    head.activateTool(.arrow)
+    head.setLineWidthControlValue(24)
+    head.beginInteraction(at: CGPoint(x: 100, y: 180))
+    head.endInteraction(at: CGPoint(x: 400, y: 180))
+    let headID = head.annotations[0].id
+    selectObject(head, at: CGPoint(x: 600, y: 350))
+    selectObject(head, at: CGPoint(x: 345, y: 154))
+    try expect(head.selectedAnnotation?.id == headID, "Arrow-head ink outside shaft tolerance was not selectable")
+
+    for tool in [EditorTool.pen, .arrow] {
+        for end in [CGPoint(x: 300, y: 160), CGPoint(x: 160, y: 300)] {
+            let thin = EditorDocument(baseImage: makeImage())
+            thin.activateTool(tool)
+            thin.setLineWidthControlValue(10)
+            let start = CGPoint(x: 160, y: 160)
+            drag(thin, from: start, to: end)
+            let before = thin.annotations
+            selectObject(thin, at: CGPoint(x: (start.x + end.x) / 2, y: (start.y + end.y) / 2))
+            let handle = try selectedOverlay(thin).handleRect
+            let handlePoint = CGPoint(x: handle.midX, y: handle.midY)
+            drag(thin, from: handlePoint, to: CGPoint(x: handlePoint.x + 31, y: handlePoint.y + 29))
+            let bounds = try selectedOverlay(thin).rect
+            try expect(
+                bounds.minX.isFinite && bounds.minY.isFinite && bounds.width.isFinite && bounds.height.isFinite
+                    && bounds.width > 0 && bounds.height > 0,
+                "Resizing a horizontal or vertical \(tool) produced invalid geometry"
+            )
+            let after = thin.annotations
+            let exported = try pixels(thin)
+            thin.undo()
+            try expect(thin.annotations == before, "Degenerate-path resize undo lost the original")
+            thin.redo()
+            try expect(thin.annotations == after, "Degenerate-path resize redo changed points")
+            try expectSamePixels(pixels(thin), exported, "Degenerate-path redo changed export")
+        }
+    }
+
+    let shape = EditorDocument(baseImage: makeImage())
+    try createVisual(shape, kind: "rectangle-filled")
+    selectObject(shape, at: objectGrab("rectangle-filled"))
+    let before = try selectedOverlay(shape)
+    let handle = CGPoint(x: before.handleRect.midX - 2, y: before.handleRect.midY + 2)
+    drag(shape, from: handle, to: CGPoint(x: handle.x + 60, y: handle.y + 7), constrained: true)
+    let after = try selectedOverlay(shape).rect
+    try expect(
+        abs(after.width / after.height - before.rect.width / before.rect.height) < 0.001
+            && after.origin == before.rect.origin && after.width > before.rect.width,
+        "Shift corner resizing did not preserve the object's aspect ratio and opposite corner"
+    )
+}
+
+@MainActor
+private func inkHitTestingAndMaskOrdering() throws {
+    for kind in ["stroke", "arrow", "rectangle-outline", "ellipse-outline", "rectangle-filled", "ellipse-filled"] {
+        let document = EditorDocument(baseImage: makeImage())
+        let object = try createVisual(document, kind: kind)
+        let emptyPoint: CGPoint
+        switch kind {
+        case "stroke", "arrow": emptyPoint = CGPoint(x: 110, y: 210)
+        case "ellipse-filled": emptyPoint = CGPoint(x: 103, y: 103)
+        default: emptyPoint = CGPoint(x: 200, y: 160)
+        }
+        selectObject(document, at: emptyPoint)
+        if kind == "rectangle-filled" {
+            try expect(document.selectedAnnotation?.id == object.id, "A filled rectangle's interior was not selectable")
+        } else {
+            try expect(document.selectedAnnotation == nil, "\(kind) selected empty space inside its bounding box")
+        }
+        selectObject(document, at: objectGrab(kind))
+        try expect(document.selectedAnnotation?.id == object.id, "Actual \(kind) ink was not selectable")
+        if kind == "ellipse-filled" {
+            selectObject(document, at: CGPoint(x: 200, y: 160))
+            try expect(document.selectedAnnotation?.id == object.id, "A filled ellipse's interior was not selectable")
+        }
+    }
+
+    let document = EditorDocument(baseImage: makeImage())
+    let source = try pixels(document)
+    rectangle(document, color: .red)
+    let bottom = document.annotations[0]
+    rectangle(document, color: .blue)
+    let top = document.annotations[1]
+    let overlap = CGPoint(x: 240, y: 160)
+    selectObject(document, at: overlap)
+    try expect(document.selectedAnnotation?.id == top.id, "Overlapping objects did not select the topmost ink")
+    erase(document, from: CGPoint(x: 100, y: 160), to: CGPoint(x: 380, y: 160), width: 36)
+    let erased = document.annotations
+    let erasedPixels = try pixels(document)
+    try same(erasedPixels, source, at: overlap, "Mask did not hide both older objects")
+    selectObject(document, at: overlap)
+    try expect(document.selectedAnnotation == nil, "Masked ink remained selectable through an eraser")
+    selectObject(document, at: CGPoint(x: 240, y: 210))
+    try expect(document.selectedAnnotation?.id == top.id, "Unmasked portion of an object became unselectable")
+    rectangle(document, color: .green)
+    let later = document.annotations.last!
+    let repaintedPixels = try pixels(document)
+    selectObject(document, at: overlap)
+    try expect(document.selectedAnnotation?.id == later.id, "Earlier eraser masked selection of a later object")
+    document.undo()
+    try expect(document.annotations == erased, "Undo removed an object other than the later repaint")
+    try expectSamePixels(pixels(document), erasedPixels, "Undo repaint changed mask ordering")
+    document.undo()
+    try expect(document.annotations == [bottom, top], "Undo eraser lost earlier object order")
+    selectObject(document, at: overlap)
+    try expect(document.selectedAnnotation?.id == top.id, "Undo eraser did not restore selectability")
+    document.redo()
+    document.redo()
+    try expectSamePixels(pixels(document), repaintedPixels, "Redo did not reproduce erased-then-repainted ordering")
+
+    _ = document.handleEscape()
+    document.activateTool(.ellipse)
+    document.setShapeStyle(.outline)
+    document.beginInteraction(at: CGPoint(x: 100, y: 100))
+    document.endInteraction(at: CGPoint(x: 380, y: 260))
+    selectObject(document, at: overlap)
+    try expect(document.selectedAnnotation?.id == later.id, "An outline ellipse's empty hole blocked older visible ink")
+}
+
+@MainActor
+private func selectedStyleHistory() throws {
+    for kind in visualKinds {
+        let document = EditorDocument(baseImage: makeImage())
+        let original = try createVisual(document, kind: kind)
+        selectObject(document, at: objectGrab(kind))
+        document.beginStyleEditing()
+        if kind == "blur" {
+            for value in [16.0, 21, 28] { document.setBlurControlValue(value) }
+            try expect(document.currentBlurControlValue == 28, "Blur control did not expose the selected object's value")
+        } else if kind == "text" {
+            for value in [28.0, 34, 40] { document.setTextSizeControlValue(value) }
+            try expect(document.currentTextSizeControlValue == 40, "Text size control did not expose the selected object's value")
+        } else {
+            for value in [16.0, 21, 28] { document.setLineWidthControlValue(value) }
+            try expect(document.currentLineWidthControlValue == 28, "Width control did not expose the selected object's value")
+        }
+        document.endStyleEditing()
+        let styled = document.annotations
+        let styledPixels = try pixels(document)
+        try expect(styled != [original] && styled[0].id == original.id, "Slider did not style the existing \(kind)")
+        document.undo()
+        try expect(document.annotations == [original], "One undo did not restore an entire \(kind) slider drag")
+        document.redo()
+        try expect(document.annotations == styled, "Slider redo changed \(kind) style or ID")
+        try expectSamePixels(pixels(document), styledPixels, "Slider redo changed \(kind) export")
+        if kind != "blur" {
+            document.applySelectedColor(.blue)
+            let recolored = document.annotations
+            try expect(recolored[0].color == .blue, "Color control did not update selected \(kind)")
+            document.undo()
+            try expect(document.annotations == styled, "One color update was not a separate history entry")
+            document.redo()
+            try expect(document.annotations == recolored, "Color redo changed the selected object")
+        } else {
+            document.applySelectedColor(.blue)
+            try expect(document.annotations == styled, "Color control mutated a blur")
+        }
+        if case let .shape(shape) = styled[0] {
+            let beforeRestyle = document.annotations
+            let beforeRestylePixels = try pixels(document)
+            document.setShapeStyle(shape.style == .filled ? .outline : .filled)
+            try expect(document.currentShapeStyle != shape.style, "Shape-style control did not update selection")
+            let restyled = document.annotations
+            document.undo()
+            try expect(document.annotations == beforeRestyle, "Style undo changed shape payload, identity, or order")
+            try expectSamePixels(pixels(document), beforeRestylePixels, "Style undo did not restore filled/outline pixels")
+            document.redo()
+            try expect(document.annotations == restyled, "Shape-style redo changed the object")
+        }
+    }
+
+    let document = EditorDocument(baseImage: makeTextImage())
+    let original = try addText(document, "Before\nnative editing", at: CGPoint(x: 80, y: 60), size: 24)
+    let before = document.annotations
+    let beforePixels = try pixels(document)
+    try expect(document.beginEditingSelectedText(), "Could not reopen text for a grouped native session")
+    document.setPendingText("After\n\nmultiline editing\n")
+    document.setTextFont(.monospaced)
+    document.setTextSizeControlValue(36)
+    document.applySelectedColor(.blue)
+    try expect(document.duplicateSelectedAnnotation() == false, "Duplicate consumed active native input")
+    document.commitPendingTextInsertion()
+    let edited = document.annotations
+    let editedPixels = try pixels(document)
+    try expect(edited.count == 1 && edited[0].id == original.id, "Native Done duplicated the text object")
+    document.undo()
+    try expect(document.annotations == before, "Native Done did not group content and all styles into one edit")
+    try expectSamePixels(pixels(document), beforePixels, "Native session undo left changed text ink")
+    document.redo()
+    try expect(document.annotations == edited, "Native session redo lost content or typography")
+    try expectSamePixels(pixels(document), editedPixels, "Native session redo changed multiline export")
+    document.undo()
+    document.undo()
+    try expect(document.annotations.isEmpty && document.canUndo == false, "Native session generated multiple document history entries")
+
+    let ungrouped = EditorDocument(baseImage: makeImage())
+    let arrow = try createVisual(ungrouped, kind: "arrow")
+    selectObject(ungrouped, at: objectGrab("arrow"))
+    ungrouped.setLineWidthControlValue(18)
+    let firstWidth = ungrouped.annotations
+    ungrouped.setLineWidthControlValue(26)
+    let secondWidth = ungrouped.annotations
+    ungrouped.undo()
+    try expect(ungrouped.annotations == firstWidth, "Ungrouped width calls were incorrectly merged")
+    ungrouped.undo()
+    try expect(ungrouped.annotations == [arrow], "Ungrouped width undo did not restore the original")
+    ungrouped.redo()
+    ungrouped.redo()
+    try expect(ungrouped.annotations == secondWidth, "Ungrouped width redo lost a style transition")
+}
+
+@MainActor
+private func replacingID(_ annotation: EditorAnnotation, with id: UUID) -> EditorAnnotation {
+    switch annotation {
+    case var .stroke(value): value.id = id; return .stroke(value)
+    case var .arrow(value): value.id = id; return .arrow(value)
+    case var .shape(value): value.id = id; return .shape(value)
+    case var .blur(value): value.id = id; return .blur(value)
+    case var .text(value): value.id = id; return .text(value)
+    case .eraser: return annotation
+    }
+}
+
+@MainActor
+private func duplicateDeleteHistory() throws {
+    for kind in visualKinds {
+        let document = EditorDocument(baseImage: makeImage())
+        let original = try createVisual(document, kind: kind)
+        erase(document, from: CGPoint(x: 80, y: 190), to: CGPoint(x: 420, y: 190), width: 20)
+        selectObject(document, at: objectGrab(kind))
+        try expect(document.selectedAnnotation?.id == original.id, "Duplicate fixture lost the visible \(kind)")
+        let before = document.annotations
+        let beforeSelection = document.selectedAnnotation
+        let beforePixels = try pixels(document)
+        try expect(document.duplicateSelectedAnnotation(), "Could not duplicate selected \(kind)")
+        let duplicated = document.annotations
+        guard let copy = duplicated.last else { throw Failure.check("Duplicate did not append \(kind)") }
+        try expect(
+            duplicated.count == before.count + 1 && Array(duplicated.dropLast()) == before
+                && copy.id != original.id && document.selectedAnnotation?.id == copy.id,
+            "Duplicate changed an existing ID/order or did not select the new \(kind)"
+        )
+        let originalBounds = EditorAnnotationGeometry.bounds(of: original)
+        let copyBounds = EditorAnnotationGeometry.bounds(of: copy)
+        let offset = CGSize(width: copyBounds.minX - originalBounds.minX, height: copyBounds.minY - originalBounds.minY)
+        try expect(offset != .zero, "Duplicate did not offset \(kind) despite available source space")
+        try expect(
+            CGRect(origin: .zero, size: document.pixelSize).contains(copyBounds),
+            "Duplicate placed a fitting \(kind) outside the source"
+        )
+        try expectTranslated(replacingID(copy, with: original.id), from: original, by: offset)
+        let duplicatePixels = try pixels(document)
+        try expect(try changedPixels(duplicatePixels, from: beforePixels).isEmpty == false, "Duplicate did not add visible \(kind) ink")
+        if kind == "rectangle-filled" {
+            let exposed = CGPoint(x: copyBounds.midX, y: 190)
+            try expect(
+                distance(color(duplicatePixels, exposed), color(beforePixels, exposed)) > 0.1,
+                "Duplicate remained below the older eraser action"
+            )
+        }
+        document.undo()
+        try expect(document.annotations == before && document.selectedAnnotation == beforeSelection, "Duplicate undo did not restore exact \(kind) order and selection")
+        try expectSamePixels(pixels(document), beforePixels, "Duplicate undo changed earlier eraser order")
+        document.redo()
+        try expect(document.annotations == duplicated && document.selectedAnnotation?.id == copy.id, "Duplicate redo minted another UUID or lost selection")
+        try expectSamePixels(pixels(document), duplicatePixels, "Duplicate redo changed export")
+        try expect(document.deleteSelectedAnnotation(), "Could not delete duplicate \(kind)")
+        try expect(document.annotations == before, "Deleting a duplicate removed the wrong \(kind)")
+        try expect(document.selectedAnnotation == nil, "Delete retained a dangling selected UUID")
+        document.undo()
+        try expect(document.annotations == duplicated && document.selectedAnnotation?.id == copy.id, "Delete undo did not restore the duplicate's ID/index/selection")
+        document.redo()
+        try expect(document.annotations == before, "Delete redo removed the wrong object")
+        try expectSamePixels(pixels(document), beforePixels, "Delete redo changed prior eraser output")
+        document.undo()
+        document.undo()
+        try expect(document.annotations == before && document.selectedAnnotation?.id == original.id, "Returning before duplication lost original selection")
+        try expect(document.deleteSelectedAnnotation(), "Could not delete the original \(kind) below an eraser")
+        try expect(document.annotations == Array(before.dropFirst()), "Delete did not remove the selected original index")
+        document.undo()
+        try expect(document.annotations == before && document.selectedAnnotation?.id == original.id, "Delete undo did not reinsert \(kind) at its original index")
+        try expectSamePixels(pixels(document), beforePixels, "Delete undo reordered \(kind) above its eraser")
+    }
+
+    let edge = EditorDocument(baseImage: makeImage())
+    edge.activateTool(.rectangle)
+    edge.setShapeStyle(.filled)
+    edge.beginInteraction(at: CGPoint(x: 530, y: 310))
+    edge.endInteraction(at: CGPoint(x: 630, y: 390))
+    selectObject(edge, at: CGPoint(x: 570, y: 340))
+    let original = edge.annotations[0]
+    try expect(edge.duplicateSelectedAnnotation(), "Near-edge object could not be duplicated")
+    let copied = edge.annotations.last!
+    let bounds = EditorAnnotationGeometry.bounds(of: copied)
+    let originalBounds = EditorAnnotationGeometry.bounds(of: original)
+    try expect(
+        copied.id != original.id && bounds != originalBounds
+            && bounds.size == originalBounds.size
+            && CGRect(origin: .zero, size: edge.pixelSize).contains(bounds),
+        "Near-edge duplicate shrank, overlapped exactly, or escaped available source space"
+    )
+}
+
+@MainActor
+private func redoBoundariesAndIsolation() throws {
+    let document = EditorDocument(baseImage: makeImage())
+    let original = try createVisual(document, kind: "rectangle-filled")
+    let grab = objectGrab("rectangle-filled")
+    selectObject(document, at: grab)
+    document.applySelectedColor(.blue)
+    let styled = document.annotations
+    document.undo()
+    let redoName = document.redoActionName
+    try expect(document.annotations == [original] && document.canRedo, "Could not establish a redo branch")
+    selectObject(document, at: CGPoint(x: 600, y: 350))
+    try expect(document.deleteSelectedAnnotation() == false, "Delete without selection mutated the document")
+    try expect(document.duplicateSelectedAnnotation() == false, "Duplicate without selection mutated the document")
+    selectObject(document, at: grab)
+    document.applySelectedColor(original.color!)
+    document.setLineWidthControlValue(document.currentLineWidthControlValue)
+    document.setShapeStyle(document.currentShapeStyle)
+    let originalWidth = document.currentLineWidthControlValue
+    document.beginStyleEditing()
+    document.setLineWidthControlValue(originalWidth + 10)
+    document.setLineWidthControlValue(originalWidth)
+    document.endStyleEditing()
+    drag(document, from: grab, to: grab)
+    let overlay = try selectedOverlay(document)
+    let handle = CGPoint(x: overlay.handleRect.midX - 3, y: overlay.handleRect.midY + 2)
+    drag(document, from: handle, to: handle)
+    try expect(
+        document.annotations == [original] && document.canRedo && document.redoActionName == redoName,
+        "Selection, unchanged styling, or zero-motion editing consumed the redo branch"
+    )
+    document.beginInteraction(at: grab)
+    document.updateInteraction(at: CGPoint(x: grab.x + 33, y: grab.y + 21))
+    try expect(document.handleEscape(), "Escape did not cancel an active object move")
+    try expect(document.annotations == [original] && document.canRedo, "Escape left changed geometry or cleared redo")
+    selectObject(document, at: grab)
+    document.beginInteraction(at: handle)
+    document.updateInteraction(at: CGPoint(x: handle.x + 40, y: handle.y + 30))
+    document.activateTool(.pen)
+    try expect(document.annotations == [original] && document.canRedo, "Tool switching committed an active resize or cleared redo")
+    selectObject(document, at: grab)
+    document.beginInteraction(at: grab)
+    document.updateInteraction(at: CGPoint(x: grab.x + 33, y: grab.y + 21))
+    document.undo()
+    try expect(document.annotations == [original] && document.canRedo, "Undo of active move consumed a committed entry")
+    document.activateTool(.pen)
+    document.beginInteraction(at: CGPoint(x: 400, y: 50))
+    document.updateInteraction(at: CGPoint(x: 450, y: 90))
+    try expect(document.handleEscape(), "Escape did not cancel new pen input")
+    document.activateTool(.eraser)
+    document.beginInteraction(at: grab)
+    document.updateInteraction(at: CGPoint(x: 250, y: 160))
+    document.activateTool(.move)
+    try expect(
+        document.annotations == [original] && document.canRedo && document.redoActionName == redoName,
+        "Cancelling uncommitted drawing/erasing consumed the redo branch"
+    )
+    document.redo()
+    try expect(document.annotations == styled, "Redo after no-op/cancel did not restore the original branch")
+    document.undo()
+    selectObject(document, at: grab)
+    drag(document, from: grab, to: CGPoint(x: grab.x + 10, y: grab.y + 10))
+    let moved = document.annotations
+    try expect(document.canRedo == false && document.redoActionName.isEmpty, "A real mutation did not truncate redo")
+    document.redo()
+    try expect(document.annotations == moved, "Truncated redo resurrected an obsolete style branch")
+    document.undo()
+    try expect(document.annotations == [original], "No-op/cancel input produced hidden history entries")
+    document.undo()
+    try expect(document.annotations.isEmpty && document.canUndo == false, "No-op/cancel input fragmented creation history")
+
+    let text = EditorDocument(baseImage: makeTextImage())
+    let inserted = try addText(text, "Unchanged\ntext session", at: CGPoint(x: 70, y: 50), size: 24)
+    text.setTextFont(.serif)
+    let textStyled = text.annotations
+    text.undo()
+    try expect(text.beginEditingSelectedText(), "Could not reopen text with a redo branch")
+    text.setPendingText(inserted.text)
+    text.setTextFont(inserted.font)
+    text.setTextSizeControlValue(Double(inserted.fontSize))
+    text.applySelectedColor(inserted.color)
+    text.commitPendingTextInsertion()
+    try expect(text.canRedo, "An unchanged native session cleared redo")
+    text.redo()
+    try expect(text.annotations == textStyled, "Redo after unchanged native input lost the style edit")
+
+    let other = EditorDocument(baseImage: makeImage())
+    try createVisual(other, kind: "ellipse-filled")
+    let otherObjects = other.annotations
+    let otherPixels = try pixels(other)
+    let otherUndoName = other.undoActionName
+    text.undo()
+    text.undo()
+    try expect(
+        other.annotations == otherObjects && other.canUndo && other.canRedo == false
+            && other.undoActionName == otherUndoName,
+        "Undo in one editor changed another editor's document or history"
+    )
+    try expectSamePixels(pixels(other), otherPixels, "Another document's undo changed independent export")
+    other.undo()
+    try expect(text.annotations.isEmpty && text.canRedo, "Undo in another editor changed the first editor's redo branch")
+    text.redo()
+    try expect(other.annotations.isEmpty && other.canRedo, "Redo in one editor affected another editor")
+}
+
 @main
 private struct EditorAnnotationTests {
     @MainActor
@@ -664,6 +1388,13 @@ private struct EditorAnnotationTests {
             case "text-layout-export": try textLayoutAndExport()
             case "text-move-resize": try textMoveAndWidthResize()
             case "text-retina-edges": try textRetinaAndImageEdges()
+            case "creation-history": try creationHistory()
+            case "object-move-resize-history": try objectMoveResizeHistory()
+            case "arrow-endpoints-degenerate": try arrowEndpointsAndDegenerateGeometry()
+            case "ink-hit-mask-order": try inkHitTestingAndMaskOrdering()
+            case "selected-style-history": try selectedStyleHistory()
+            case "duplicate-delete-history": try duplicateDeleteHistory()
+            case "redo-boundaries-isolation": try redoBoundariesAndIsolation()
             default: throw Failure.check("Unknown test scenario")
             }
         } catch {
