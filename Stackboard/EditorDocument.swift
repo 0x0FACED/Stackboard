@@ -7,6 +7,8 @@ enum EditorTool: String, CaseIterable, Identifiable {
     case move
     case pen
     case arrow
+    case rectangle
+    case ellipse
     case blur
     case text
 
@@ -17,6 +19,8 @@ enum EditorTool: String, CaseIterable, Identifiable {
         case .move: return "cursorarrow"
         case .pen: return "pencil.tip"
         case .arrow: return "arrow.up.right"
+        case .rectangle: return "rectangle"
+        case .ellipse: return "oval"
         case .blur: return "drop.fill"
         case .text: return "textformat"
         }
@@ -117,6 +121,40 @@ struct EditorArrow {
     var lineWidth: CGFloat
 }
 
+enum EditorShapeKind {
+    case rectangle
+    case ellipse
+}
+
+enum EditorShapeStyle: String, CaseIterable, Identifiable {
+    case outline
+    case filled
+
+    var id: String { rawValue }
+
+    var title: String {
+        rawValue.capitalized
+    }
+}
+
+struct EditorShape {
+    let id = UUID()
+    var kind: EditorShapeKind
+    var rect: CGRect
+    var color: EditorColor
+    var lineWidth: CGFloat
+    var style: EditorShapeStyle
+
+    var path: CGPath {
+        switch kind {
+        case .rectangle:
+            return CGPath(rect: rect, transform: nil)
+        case .ellipse:
+            return CGPath(ellipseIn: rect, transform: nil)
+        }
+    }
+}
+
 struct EditorBlur {
     let id = UUID()
     var rect: CGRect
@@ -135,6 +173,7 @@ struct EditorTextAnnotation {
 enum EditorAnnotation: Identifiable {
     case stroke(EditorStroke)
     case arrow(EditorArrow)
+    case shape(EditorShape)
     case blur(EditorBlur)
     case text(EditorTextAnnotation)
 
@@ -142,6 +181,7 @@ enum EditorAnnotation: Identifiable {
         switch self {
         case let .stroke(stroke): return stroke.id
         case let .arrow(arrow): return arrow.id
+        case let .shape(shape): return shape.id
         case let .blur(blur): return blur.id
         case let .text(text): return text.id
         }
@@ -176,6 +216,7 @@ struct PendingTextInsertion: Identifiable, Equatable {
 private enum EditorCanvasInteractionState {
     case none
     case drawing
+    case drawingShape(anchor: CGPoint)
     case movingBlur(id: UUID, pointerOffset: CGSize, size: CGSize)
     case resizingBlur(id: UUID, anchor: CGPoint)
     case movingText(id: UUID, pointerOffset: CGSize, size: CGSize)
@@ -188,15 +229,17 @@ final class EditorDocument: ObservableObject {
     let pixelSize: CGSize
 
     @Published var selectedTool: EditorTool = .pen
-    @Published private(set) var selectedColor: EditorColor = .yellow
+    @Published private(set) var selectedColor: EditorColor = .red
     /// Stored in image pixels; preview scales this width with the canvas, just like export.
     @Published var lineWidth: Double = 6
+    @Published var shapeStyle: EditorShapeStyle = .outline
     @Published private(set) var blurRadius: Double = 14
     @Published private(set) var textFont: EditorTextFont = .system
     @Published private(set) var textFontSize: Double = 24
     @Published private(set) var annotations: [EditorAnnotation] = []
     @Published private(set) var activeStroke: EditorStroke?
     @Published private(set) var activeArrow: EditorArrow?
+    @Published private(set) var activeShape: EditorShape?
     @Published private(set) var activeBlur: EditorBlur? {
         didSet {
             if let oldValue,
@@ -234,6 +277,11 @@ final class EditorDocument: ObservableObject {
 
         if tool != .text {
             _ = commitPendingTextInsertion()
+        }
+
+        if case .drawingShape = interactionState {
+            activeShape = nil
+            interactionState = .none
         }
 
         if tool == .move {
@@ -286,6 +334,16 @@ final class EditorDocument: ObservableObject {
                 lineWidth: lineWidth
             )
             interactionState = .drawing
+        case .rectangle, .ellipse:
+            let anchor = clamped(point: point)
+            activeShape = EditorShape(
+                kind: selectedTool == .rectangle ? .rectangle : .ellipse,
+                rect: CGRect(origin: anchor, size: .zero),
+                color: selectedColor,
+                lineWidth: lineWidth,
+                style: shapeStyle
+            )
+            interactionState = .drawingShape(anchor: anchor)
         case .blur:
             activeBlur = EditorBlur(rect: CGRect(origin: point, size: .zero), radius: blurRadius)
             interactionState = .drawing
@@ -295,10 +353,12 @@ final class EditorDocument: ObservableObject {
         }
     }
 
-    func updateInteraction(at point: CGPoint) {
+    func updateInteraction(at point: CGPoint, constrainProportions: Bool = false) {
         switch interactionState {
         case .drawing:
             updateDrawingInteraction(at: point)
+        case let .drawingShape(anchor):
+            updateShapeInteraction(from: anchor, to: point, constrainProportions: constrainProportions)
         case let .movingBlur(id, pointerOffset, size):
             updateBlurPosition(id: id, origin: CGPoint(x: point.x - pointerOffset.width, y: point.y - pointerOffset.height), size: size)
         case let .resizingBlur(id, anchor):
@@ -315,7 +375,7 @@ final class EditorDocument: ObservableObject {
         }
     }
 
-    func endInteraction(at point: CGPoint) {
+    func endInteraction(at point: CGPoint, constrainProportions: Bool = false) {
         defer {
             interactionState = .none
         }
@@ -323,6 +383,12 @@ final class EditorDocument: ObservableObject {
         switch interactionState {
         case .drawing:
             finalizeDrawingInteraction(at: point)
+        case let .drawingShape(anchor):
+            updateShapeInteraction(from: anchor, to: point, constrainProportions: constrainProportions)
+            if let activeShape, activeShape.rect.width > 1, activeShape.rect.height > 1 {
+                annotations.append(.shape(activeShape))
+            }
+            activeShape = nil
         case .movingBlur, .resizingBlur, .movingText, .resizingText, .none:
             break
         }
@@ -482,6 +548,8 @@ final class EditorDocument: ObservableObject {
                 drawStroke(stroke)
             case let .arrow(arrow):
                 drawArrow(arrow)
+            case let .shape(shape):
+                drawShape(shape)
             case let .blur(blur):
                 drawBlur(blur)
             case let .text(text):
@@ -502,6 +570,9 @@ final class EditorDocument: ObservableObject {
         }
         if let activeArrow {
             result.append(.arrow(activeArrow))
+        }
+        if let activeShape {
+            result.append(.shape(activeShape))
         }
         if let activeBlur {
             result.append(.blur(activeBlur))
@@ -602,9 +673,31 @@ final class EditorDocument: ObservableObject {
                 rect: normalizedRect(from: startPoint, to: point),
                 radius: blurRadius
             )
-        case .text:
+        case .rectangle, .ellipse, .text:
             break
         }
+    }
+
+    private func updateShapeInteraction(from anchor: CGPoint, to point: CGPoint, constrainProportions: Bool) {
+        guard var activeShape else {
+            return
+        }
+
+        if constrainProportions {
+            let deltaX = point.x - anchor.x
+            let deltaY = point.y - anchor.y
+            let directionX: CGFloat = deltaX < 0 ? -1 : 1
+            let directionY: CGFloat = deltaY < 0 ? -1 : 1
+            let availableWidth = directionX < 0 ? anchor.x : pixelSize.width - anchor.x
+            let availableHeight = directionY < 0 ? anchor.y : pixelSize.height - anchor.y
+            let side = min(max(abs(deltaX), abs(deltaY)), availableWidth, availableHeight)
+            let end = CGPoint(x: anchor.x + directionX * side, y: anchor.y + directionY * side)
+            activeShape.rect = normalizedRect(from: anchor, to: end)
+        } else {
+            activeShape.rect = normalizedRect(from: anchor, to: clamped(point: point))
+        }
+
+        self.activeShape = activeShape
     }
 
     private func finalizeDrawingInteraction(at point: CGPoint) {
@@ -641,7 +734,7 @@ final class EditorDocument: ObservableObject {
                 select(EditorSelection(id: activeBlur.id, kind: .blur))
             }
             self.activeBlur = nil
-        case .text:
+        case .rectangle, .ellipse, .text:
             break
         }
     }
@@ -683,9 +776,10 @@ final class EditorDocument: ObservableObject {
             return true
         }
 
-        if activeStroke != nil || activeArrow != nil || activeBlur != nil {
+        if activeStroke != nil || activeArrow != nil || activeShape != nil || activeBlur != nil {
             activeStroke = nil
             activeArrow = nil
+            activeShape = nil
             activeBlur = nil
             interactionState = .none
             return true
@@ -762,7 +856,7 @@ final class EditorDocument: ObservableObject {
                 if textBounds(for: text).insetBy(dx: -12, dy: -12).contains(point) {
                     return EditorSelection(id: text.id, kind: .text)
                 }
-            case .stroke, .arrow:
+            case .stroke, .arrow, .shape:
                 continue
             }
         }
@@ -948,6 +1042,31 @@ final class EditorDocument: ObservableObject {
         headPath.move(to: end)
         headPath.line(to: right)
         headPath.stroke()
+    }
+
+    private func drawShape(_ shape: EditorShape) {
+        guard let context = NSGraphicsContext.current?.cgContext else {
+            return
+        }
+
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.translateBy(x: 0, y: pixelSize.height)
+        context.scaleBy(x: 1, y: -1)
+        context.addPath(shape.path)
+
+        switch shape.style {
+        case .outline:
+            context.setStrokeColor(shape.color.nsColor.cgColor)
+            context.setLineWidth(shape.lineWidth)
+            context.setLineCap(.butt)
+            context.setLineJoin(.miter)
+            context.setMiterLimit(10)
+            context.strokePath()
+        case .filled:
+            context.setFillColor(shape.color.nsColor.cgColor)
+            context.fillPath()
+        }
     }
 
     /// Preview and export share the same pixel-resolution patch and radius. As in export's

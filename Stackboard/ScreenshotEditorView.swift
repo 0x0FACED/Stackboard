@@ -1,8 +1,10 @@
+import AppKit
 import SwiftUI
 
 private enum EditorToolbarContextMode {
     case none
     case lineWidth
+    case shape
     case blur
     case text
 }
@@ -116,12 +118,25 @@ struct ScreenshotEditorView: View {
         VStack(alignment: .leading, spacing: 8) {
             switch contextMode {
             case .lineWidth:
-                Text("Line width")
+                lineWidthControl
+            case .shape:
+                Text("Shape style")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
-                Slider(value: $document.lineWidth, in: 2 ... 16)
-                    .accessibilityLabel("Line width")
-                    .help("Line width in image pixels")
+                Picker("Shape style", selection: $document.shapeStyle) {
+                    ForEach(EditorShapeStyle.allCases) { style in
+                        Text(style.title).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                if document.shapeStyle == .outline {
+                    lineWidthControl
+                }
+                Text(document.selectedTool == .rectangle ? "Hold Shift for a square" : "Hold Shift for a circle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             case .blur:
                 HStack {
                     Text("Blur radius")
@@ -162,6 +177,17 @@ struct ScreenshotEditorView: View {
         }
     }
 
+    private var lineWidthControl: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Line width")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            Slider(value: $document.lineWidth, in: 2 ... 16)
+                .accessibilityLabel("Line width")
+                .help("Line width in image pixels")
+        }
+    }
+
     private var textControls: some View {
         Picker(
             "Font",
@@ -184,6 +210,10 @@ struct ScreenshotEditorView: View {
             return "Select blur or text to move and resize"
         case .text:
             return "Click the image to type"
+        case .rectangle:
+            return "Draw a rectangle. Hold Shift for a square."
+        case .ellipse:
+            return "Draw an ellipse. Hold Shift for a circle."
         case .pen, .arrow, .blur:
             return tool.title
         }
@@ -202,6 +232,8 @@ struct ScreenshotEditorView: View {
             }
         case .pen, .arrow:
             return .lineWidth
+        case .rectangle, .ellipse:
+            return .shape
         case .blur:
             return .blur
         case .text:
@@ -381,7 +413,14 @@ private struct EditorCanvasView: View {
     private func dragGesture(for canvasSize: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard let point = mapToImageSpace(location: value.location, canvasSize: canvasSize, clamp: false) else {
+                let isDrawingShape = didBeginInteraction &&
+                    (document.selectedTool == .rectangle || document.selectedTool == .ellipse)
+                guard let point = mapToImageSpace(
+                    location: value.location,
+                    canvasSize: canvasSize,
+                    clamp: false,
+                    allowOutsideBounds: isDrawingShape
+                ) else {
                     return
                 }
 
@@ -389,7 +428,10 @@ private struct EditorCanvasView: View {
                     didBeginInteraction = true
                     document.beginInteraction(at: point)
                 } else {
-                    document.updateInteraction(at: point)
+                    document.updateInteraction(
+                        at: point,
+                        constrainProportions: (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.shift)
+                    )
                 }
             }
             .onEnded { value in
@@ -397,25 +439,41 @@ private struct EditorCanvasView: View {
                     didBeginInteraction = false
                 }
 
-                guard let point = mapToImageSpace(location: value.location, canvasSize: canvasSize, clamp: true) else {
+                let isDrawingShape = didBeginInteraction &&
+                    (document.selectedTool == .rectangle || document.selectedTool == .ellipse)
+
+                guard let point = mapToImageSpace(
+                    location: value.location,
+                    canvasSize: canvasSize,
+                    clamp: didBeginInteraction && isDrawingShape == false,
+                    allowOutsideBounds: isDrawingShape
+                ) else {
                     return
                 }
 
                 if didBeginInteraction == false {
                     document.beginInteraction(at: point)
                 }
-                document.endInteraction(at: point)
+                document.endInteraction(
+                    at: point,
+                    constrainProportions: (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.shift)
+                )
             }
     }
 
-    private func mapToImageSpace(location: CGPoint, canvasSize: CGSize, clamp: Bool) -> CGPoint? {
+    private func mapToImageSpace(
+        location: CGPoint,
+        canvasSize: CGSize,
+        clamp: Bool,
+        allowOutsideBounds: Bool = false
+    ) -> CGPoint? {
         guard canvasSize.width > 0, canvasSize.height > 0 else {
             return nil
         }
 
         let localBounds = CGRect(origin: .zero, size: canvasSize)
 
-        if clamp == false, localBounds.contains(location) == false {
+        if clamp == false, allowOutsideBounds == false, localBounds.contains(location) == false {
             return nil
         }
 
@@ -425,8 +483,8 @@ private struct EditorCanvasView: View {
         let localY = y / canvasSize.height
 
         return CGPoint(
-            x: max(0, min(document.pixelSize.width, localX * document.pixelSize.width)),
-            y: max(0, min(document.pixelSize.height, localY * document.pixelSize.height))
+            x: localX * document.pixelSize.width,
+            y: localY * document.pixelSize.height
         )
     }
 }
@@ -441,7 +499,7 @@ private struct AnnotationLayersView: View {
             ZStack(alignment: .topLeading) {
                 ForEach(document.committedAndActiveAnnotations) { annotation in
                     switch annotation {
-                    case .stroke, .arrow:
+                    case .stroke, .arrow, .shape:
                         AnnotationCanvasView(annotation: annotation, pixelSize: document.pixelSize)
                     case let .blur(blur):
                         if let image = document.blurImage(for: blur) {
@@ -494,7 +552,7 @@ private struct AnnotationCanvasView: View {
 
     var body: some View {
         Canvas { context, size in
-            // Transform pixel-space geometry and stroke widths together, including arrow heads.
+            // Transform pixel-space geometry and stroke widths together, including shapes and arrow heads.
             context.scaleBy(
                 x: size.width / max(pixelSize.width, 1),
                 y: size.height / max(pixelSize.height, 1)
@@ -504,6 +562,8 @@ private struct AnnotationCanvasView: View {
                 drawStroke(stroke, in: &context)
             case let .arrow(arrow):
                 drawArrow(arrow, in: &context)
+            case let .shape(shape):
+                drawShape(shape, in: &context)
             case .blur, .text:
                 break
             }
@@ -568,6 +628,21 @@ private struct AnnotationCanvasView: View {
             with: .color(Color(nsColor: arrow.color.nsColor)),
             style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
         )
+    }
+
+    private func drawShape(_ shape: EditorShape, in context: inout GraphicsContext) {
+        let path = Path(shape.path)
+        let color = GraphicsContext.Shading.color(Color(nsColor: shape.color.nsColor))
+        switch shape.style {
+        case .outline:
+            context.stroke(
+                path,
+                with: color,
+                style: StrokeStyle(lineWidth: shape.lineWidth, lineJoin: .miter)
+            )
+        case .filled:
+            context.fill(path, with: color)
+        }
     }
 
 }
