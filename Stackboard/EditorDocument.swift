@@ -1,7 +1,6 @@
 import AppKit
 import Combine
 import CoreImage
-import SwiftUI
 
 enum EditorTool: String, CaseIterable, Identifiable {
     case move
@@ -51,19 +50,6 @@ enum EditorTextFont: String, CaseIterable, Identifiable {
             return "Serif"
         case .monospaced:
             return "Mono"
-        }
-    }
-
-    func swiftUIFont(size: CGFloat) -> Font {
-        switch self {
-        case .system:
-            return .system(size: size, weight: .bold, design: .default)
-        case .rounded:
-            return .system(size: size, weight: .bold, design: .rounded)
-        case .serif:
-            return .custom("Georgia-Bold", size: size)
-        case .monospaced:
-            return .system(size: size, weight: .bold, design: .monospaced)
         }
     }
 
@@ -201,13 +187,14 @@ struct EditorBlur {
     var radius: Double
 }
 
-struct EditorTextAnnotation {
+struct EditorTextAnnotation: Equatable {
     let id = UUID()
     var text: String
     var origin: CGPoint
     var color: EditorColor
     var fontSize: CGFloat
     var font: EditorTextFont
+    var width: CGFloat = 480
 }
 
 enum EditorAnnotation: Identifiable {
@@ -247,12 +234,14 @@ struct EditorSelectionOverlay: Equatable {
 }
 
 struct PendingTextInsertion: Identifiable, Equatable {
+    var annotationID: UUID? = nil
     let id = UUID()
     var origin: CGPoint
     var text: String
     var color: EditorColor
     var fontSize: CGFloat
     var font: EditorTextFont
+    var width: CGFloat = 480
 }
 
 private enum EditorCanvasInteractionState {
@@ -263,7 +252,59 @@ private enum EditorCanvasInteractionState {
     case movingBlur(id: UUID, pointerOffset: CGSize, size: CGSize)
     case resizingBlur(id: UUID, anchor: CGPoint)
     case movingText(id: UUID, pointerOffset: CGSize, size: CGSize)
-    case resizingText(id: UUID, origin: CGPoint, initialFontSize: CGFloat, initialSize: CGSize)
+    case resizingText(id: UUID, origin: CGPoint, pointerOffset: CGFloat)
+}
+
+/// TextKit supplies the same wrapping, line metrics and glyph positions for input and output.
+@MainActor
+final class EditorTextLayout {
+    let textStorage: NSTextStorage
+    let layoutManager: NSLayoutManager
+    let textContainer: NSTextContainer
+    let size: CGSize
+
+    init(text: String, width: CGFloat, font: EditorTextFont, fontSize: CGFloat, color: EditorColor) {
+        textStorage = NSTextStorage(
+            string: text,
+            attributes: Self.attributes(font: font, fontSize: fontSize, color: color)
+        )
+        layoutManager = NSLayoutManager()
+        textContainer = NSTextContainer(size: CGSize(width: max(width, 1), height: .greatestFiniteMagnitude))
+        textContainer.lineFragmentPadding = 0
+        layoutManager.addTextContainer(textContainer)
+        textStorage.addLayoutManager(layoutManager)
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        let lineHeight = layoutManager.defaultLineHeight(for: font.nsFont(size: fontSize))
+        size = CGSize(
+            width: max(width, 1),
+            height: ceil(max(lineHeight, usedRect.maxY, layoutManager.extraLineFragmentRect.maxY))
+        )
+    }
+
+    convenience init(annotation: EditorTextAnnotation) {
+        self.init(
+            text: annotation.text, width: annotation.width,
+            font: annotation.font, fontSize: annotation.fontSize, color: annotation.color
+        )
+    }
+
+    static func attributes(font: EditorTextFont, fontSize: CGFloat, color: EditorColor) -> [NSAttributedString.Key: Any] {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byWordWrapping
+        return [
+            .font: font.nsFont(size: fontSize),
+            .foregroundColor: color.nsColor,
+            .paragraphStyle: paragraph
+        ]
+    }
+
+    /// The caller provides a top-left, flipped graphics context in source-image pixels.
+    func draw(at origin: CGPoint) {
+        let range = layoutManager.glyphRange(for: textContainer)
+        layoutManager.drawBackground(forGlyphRange: range, at: origin)
+        layoutManager.drawGlyphs(forGlyphRange: range, at: origin)
+    }
 }
 
 @MainActor
@@ -301,6 +342,8 @@ final class EditorDocument: ObservableObject {
     private let baseCIImage: CIImage?
     private static let ciContext = CIContext()
     private var blurImageCache: [UUID: CachedBlurImage] = [:]
+    private var textLayoutCache: [UUID: (annotation: EditorTextAnnotation, layout: EditorTextLayout)] = [:]
+    private var pendingLayoutCache: (session: PendingTextInsertion, layout: EditorTextLayout)?
 
     private struct CachedBlurImage {
         let rect: CGRect
@@ -313,6 +356,7 @@ final class EditorDocument: ObservableObject {
         let cgImage = baseImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
         pixelSize = cgImage.map { CGSize(width: $0.width, height: $0.height) } ?? baseImage.size
         baseCIImage = cgImage.map { CIImage(cgImage: $0) }
+        textFontSize = 24 * max(pixelSize.width / max(baseImage.size.width, 1), 1)
     }
 
     func activateTool(_ tool: EditorTool) {
@@ -350,10 +394,12 @@ final class EditorDocument: ObservableObject {
             return
         }
 
+        commitPendingTextInsertion()
+
         if selectedTool == .move {
             if let selection = selectedAnnotation,
                resizeHandleContains(point, for: selection) {
-                beginResizeInteraction(for: selection)
+                beginResizeInteraction(for: selection, at: point)
                 return
             }
 
@@ -368,7 +414,6 @@ final class EditorDocument: ObservableObject {
             return
         }
 
-        commitPendingTextInsertion()
         selectedAnnotation = nil
 
         switch selectedTool {
@@ -406,7 +451,9 @@ final class EditorDocument: ObservableObject {
             activeBlur = EditorBlur(rect: CGRect(origin: point, size: .zero), radius: blurRadius)
             interactionState = .drawing
         case .text:
-            startPendingTextInsertion(at: point)
+            if beginEditingText(at: point) == false {
+                startPendingTextInsertion(at: point)
+            }
             interactionState = .none
         }
     }
@@ -425,11 +472,10 @@ final class EditorDocument: ObservableObject {
             updateBlurRect(id: id, rect: clampedRect(normalizedRect(from: anchor, to: clamped(point: point))))
         case let .movingText(id, pointerOffset, size):
             updateTextOrigin(id: id, origin: CGPoint(x: point.x - pointerOffset.width, y: point.y - pointerOffset.height), size: size)
-        case let .resizingText(id, origin, initialFontSize, initialSize):
-            let widthRatio = max((point.x - origin.x) / max(initialSize.width, 1), 0.45)
-            let heightRatio = max((point.y - origin.y) / max(initialSize.height, 1), 0.45)
-            let scale = max(widthRatio, heightRatio)
-            updateTextFontSize(id: id, fontSize: min(max(initialFontSize * scale, 12), 96))
+        case let .resizingText(id, origin, pointerOffset):
+            updateText(id) { text in
+                text.width = min(max(point.x - origin.x - pointerOffset, min(48, pixelSize.width)), pixelSize.width - origin.x)
+            }
         case .none:
             break
         }
@@ -455,7 +501,9 @@ final class EditorDocument: ObservableObject {
                 annotations.append(.shape(activeShape))
             }
             activeShape = nil
-        case .movingBlur, .resizingBlur, .movingText, .resizingText, .none:
+        case .movingText, .resizingText:
+            updateInteraction(at: point)
+        case .movingBlur, .resizingBlur, .none:
             break
         }
     }
@@ -469,11 +517,16 @@ final class EditorDocument: ObservableObject {
 
         if pendingTextInsertion != nil {
             pendingTextInsertion = nil
+            pendingLayoutCache = nil
+            if let selectedAnnotation {
+                select(selectedAnnotation)
+            }
             return
         }
 
         if let removed = annotations.popLast() {
             blurImageCache.removeValue(forKey: removed.id)
+            textLayoutCache.removeValue(forKey: removed.id)
             if removed.id == selectedAnnotation?.id {
                 selectedAnnotation = nil
             }
@@ -511,11 +564,13 @@ final class EditorDocument: ObservableObject {
     }
 
     func setTextSizeControlValue(_ value: Double) {
+        let value = min(max(value, 8), 256)
         textFontSize = value
 
         if var pendingTextInsertion {
             pendingTextInsertion.fontSize = CGFloat(value)
             self.pendingTextInsertion = pendingTextInsertion
+            return
         }
 
         guard let selectedAnnotation, selectedAnnotation.kind == .text else {
@@ -533,6 +588,7 @@ final class EditorDocument: ObservableObject {
         if var pendingTextInsertion {
             pendingTextInsertion.font = font
             self.pendingTextInsertion = pendingTextInsertion
+            return
         }
 
         guard let selectedAnnotation, selectedAnnotation.kind == .text else {
@@ -554,27 +610,113 @@ final class EditorDocument: ObservableObject {
 
     @discardableResult
     func commitPendingTextInsertion() -> Bool {
-        guard var pendingTextInsertion else {
+        guard let pending = pendingTextInsertion else {
             return false
         }
+        pendingTextInsertion = nil
+        pendingLayoutCache = nil
+        let isBlank = pending.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-        pendingTextInsertion.text = pendingTextInsertion.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.pendingTextInsertion = nil
-
-        guard pendingTextInsertion.text.isEmpty == false else {
-            return false
+        if let id = pending.annotationID {
+            guard let index = annotations.firstIndex(where: { $0.id == id }),
+                  case var .text(annotation) = annotations[index] else {
+                return false
+            }
+            if isBlank {
+                annotations.remove(at: index)
+                textLayoutCache.removeValue(forKey: id)
+                selectedAnnotation = nil
+            } else {
+                annotation.text = pending.text
+                annotation.origin = pending.origin
+                annotation.color = pending.color
+                annotation.fontSize = pending.fontSize
+                annotation.font = pending.font
+                annotation.width = pending.width
+                annotations[index] = .text(annotation)
+                select(EditorSelection(id: id, kind: .text))
+            }
+            return true
         }
 
+        guard isBlank == false else {
+            return false
+        }
         let annotation = EditorTextAnnotation(
-            text: pendingTextInsertion.text,
-            origin: pendingTextInsertion.origin,
-            color: pendingTextInsertion.color,
-            fontSize: pendingTextInsertion.fontSize,
-            font: pendingTextInsertion.font
+            text: pending.text, origin: pending.origin, color: pending.color,
+            fontSize: pending.fontSize, font: pending.font, width: pending.width
         )
         annotations.append(.text(annotation))
         select(EditorSelection(id: annotation.id, kind: .text))
         return true
+    }
+
+    @discardableResult
+    func beginEditingText(at point: CGPoint) -> Bool {
+        guard let selection = annotationSelection(at: point), selection.kind == .text else {
+            return false
+        }
+        select(selection)
+        return beginEditingSelectedText()
+    }
+
+    @discardableResult
+    func beginEditingSelectedText() -> Bool {
+        guard let annotation = selectedText else {
+            return false
+        }
+        if pendingTextInsertion?.annotationID == annotation.id {
+            return true
+        }
+        commitPendingTextInsertion()
+        select(EditorSelection(id: annotation.id, kind: .text))
+        pendingTextInsertion = PendingTextInsertion(
+            annotationID: annotation.id,
+            origin: annotation.origin, text: annotation.text, color: annotation.color,
+            fontSize: annotation.fontSize, font: annotation.font, width: annotation.width
+        )
+        interactionState = .none
+        return true
+    }
+
+    @discardableResult
+    func deleteSelectedText() -> Bool {
+        guard pendingTextInsertion == nil, let annotation = selectedText else {
+            return false
+        }
+        annotations.removeAll { $0.id == annotation.id }
+        textLayoutCache.removeValue(forKey: annotation.id)
+        selectedAnnotation = nil
+        return true
+    }
+
+    func textLayout(for annotation: EditorTextAnnotation) -> EditorTextLayout {
+        if let cached = textLayoutCache[annotation.id],
+           cached.annotation.text == annotation.text, cached.annotation.width == annotation.width,
+           cached.annotation.font == annotation.font, cached.annotation.fontSize == annotation.fontSize,
+           cached.annotation.color == annotation.color {
+            return cached.layout
+        }
+        let layout = EditorTextLayout(annotation: annotation)
+        textLayoutCache[annotation.id] = (annotation, layout)
+        return layout
+    }
+
+    var pendingTextBounds: CGRect? {
+        guard let pending = pendingTextInsertion else {
+            return nil
+        }
+        let layout: EditorTextLayout
+        if let cached = pendingLayoutCache, cached.session == pending {
+            layout = cached.layout
+        } else {
+            layout = EditorTextLayout(
+                text: pending.text, width: pending.width, font: pending.font,
+                fontSize: pending.fontSize, color: pending.color
+            )
+            pendingLayoutCache = (pending, layout)
+        }
+        return CGRect(origin: pending.origin, size: layout.size)
     }
 
     func renderCompositeImage() -> NSImage? {
@@ -650,6 +792,9 @@ final class EditorDocument: ObservableObject {
 
     var committedAndActiveAnnotations: [EditorAnnotation] {
         var result = annotations
+        if let editingID = pendingTextInsertion?.annotationID {
+            result.removeAll { $0.id == editingID }
+        }
         if let activeStroke {
             result.append(.stroke(activeStroke))
         }
@@ -702,7 +847,7 @@ final class EditorDocument: ObservableObject {
     }
 
     var selectionOverlay: EditorSelectionOverlay? {
-        guard let selectedAnnotation else {
+        guard pendingTextInsertion == nil, let selectedAnnotation else {
             return nil
         }
 
@@ -724,7 +869,7 @@ final class EditorDocument: ObservableObject {
             return EditorSelectionOverlay(
                 kind: .text,
                 rect: rect,
-                handleRect: resizeHandleRect(for: rect)
+                handleRect: textResizeHandleRect(for: rect)
             )
         }
     }
@@ -843,12 +988,14 @@ final class EditorDocument: ObservableObject {
     }
 
     private func startPendingTextInsertion(at point: CGPoint) {
+        let minimumWidth = min(CGFloat(48), pixelSize.width)
+        let font = textFont.nsFont(size: CGFloat(textFontSize))
+        let lineHeight = font.ascender - font.descender + font.leading
+        let origin = clamped(origin: point, size: CGSize(width: minimumWidth, height: ceil(lineHeight)))
         pendingTextInsertion = PendingTextInsertion(
-            origin: clamped(origin: point, size: CGSize(width: 260, height: CGFloat(textFontSize) * 1.4)),
-            text: "",
-            color: selectedColor,
-            fontSize: CGFloat(textFontSize),
-            font: textFont
+            origin: origin, text: "", color: selectedColor,
+            fontSize: CGFloat(textFontSize), font: textFont,
+            width: min(480, pixelSize.width - origin.x)
         )
     }
 
@@ -870,12 +1017,8 @@ final class EditorDocument: ObservableObject {
     }
 
     func handleEscape() -> Bool {
-        if let pendingTextInsertion {
-            if pendingTextInsertion.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                self.pendingTextInsertion = nil
-            } else {
-                _ = commitPendingTextInsertion()
-            }
+        if pendingTextInsertion != nil {
+            _ = commitPendingTextInsertion()
             return true
         }
 
@@ -929,7 +1072,7 @@ final class EditorDocument: ObservableObject {
         }
     }
 
-    private func beginResizeInteraction(for selection: EditorSelection) {
+    private func beginResizeInteraction(for selection: EditorSelection, at point: CGPoint) {
         switch selection.kind {
         case .blur:
             guard let blur = blurAnnotation(for: selection.id) else {
@@ -943,8 +1086,7 @@ final class EditorDocument: ObservableObject {
             interactionState = .resizingText(
                 id: text.id,
                 origin: text.origin,
-                initialFontSize: text.fontSize,
-                initialSize: textBounds(for: text).size
+                pointerOffset: point.x - text.origin.x - text.width
             )
         }
     }
@@ -1040,13 +1182,11 @@ final class EditorDocument: ObservableObject {
     }
 
     private func textBounds(for annotation: EditorTextAnnotation) -> CGRect {
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: annotation.font.nsFont(size: annotation.fontSize)
-        ]
-        let measured = NSString(string: annotation.text).size(withAttributes: attributes)
-        let width = max(measured.width, 48)
-        let height = max(measured.height, annotation.fontSize * 1.2)
-        return CGRect(origin: annotation.origin, size: CGSize(width: width, height: height))
+        CGRect(origin: annotation.origin, size: textLayout(for: annotation).size)
+    }
+
+    private func textResizeHandleRect(for rect: CGRect) -> CGRect {
+        CGRect(x: rect.maxX - 9, y: rect.midY - 9, width: 18, height: 18)
     }
 
     private func resizeHandleRect(for rect: CGRect) -> CGRect {
@@ -1225,16 +1365,17 @@ final class EditorDocument: ObservableObject {
     }
 
     private func drawText(_ text: EditorTextAnnotation) {
-        let point = CGPoint(
-            x: text.origin.x,
-            y: pixelSize.height - text.origin.y - text.fontSize
-        )
-
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: text.font.nsFont(size: text.fontSize),
-            .foregroundColor: text.color.nsColor
-        ]
-        NSString(string: text.text).draw(at: point, withAttributes: attributes)
+        guard let context = NSGraphicsContext.current?.cgContext else {
+            return
+        }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.translateBy(x: 0, y: pixelSize.height)
+        context.scaleBy(x: 1, y: -1)
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        textLayout(for: text).draw(at: text.origin)
     }
 
     private func flip(point: CGPoint) -> CGPoint {

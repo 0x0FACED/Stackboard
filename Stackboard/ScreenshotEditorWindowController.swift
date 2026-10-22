@@ -5,6 +5,7 @@ import SwiftUI
 final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelegate {
     private let appController: AppController
     private let editorDocument: EditorDocument
+    private var keyboardMonitor: Any?
 
     /// Fits the native-point-size canvas to its captured screen, retaining an attainable fixed minimum.
     init(appController: AppController, capture: ScreenshotCapture) {
@@ -64,6 +65,7 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
 
             self.copyAndClose()
         }
+        installKeyboardMonitor()
 
         // Hosting attachment and initial layout can replace the window's requested size.
         hostingController.view.layoutSubtreeIfNeeded()
@@ -81,12 +83,22 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
         nil
     }
 
+    deinit {
+        if let keyboardMonitor {
+            NSEvent.removeMonitor(keyboardMonitor)
+        }
+    }
+
     func windowDidBecomeKey(_ notification: Notification) {
         appController.foregroundWindowDidBecomeKey()
         window?.orderFrontRegardless()
     }
 
     func windowWillClose(_ notification: Notification) {
+        if let keyboardMonitor {
+            NSEvent.removeMonitor(keyboardMonitor)
+            self.keyboardMonitor = nil
+        }
         appController.editorWindowDidClose(self)
     }
 
@@ -96,6 +108,32 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
             appController.copyImageToClipboard(image)
         }
         close()
+    }
+
+    private func installKeyboardMonitor() {
+        keyboardMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, let window = self.window, event.window === window,
+                  self.editorDocument.pendingTextInsertion == nil,
+                  (window.firstResponder is NSTextView) == false,
+                  event.modifierFlags.intersection([.command, .control, .option]).isEmpty,
+                  event.isARepeat == false else {
+                return event
+            }
+
+            switch event.keyCode {
+            case 36, 76:
+                if self.editorDocument.beginEditingSelectedText() {
+                    return nil
+                }
+            case 51, 117:
+                if self.editorDocument.deleteSelectedText() {
+                    return nil
+                }
+            default:
+                break
+            }
+            return event
+        }
     }
 
     private static func visibleFrame(for selectionRect: CGRect) -> CGRect {

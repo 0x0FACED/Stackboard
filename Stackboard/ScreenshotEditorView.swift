@@ -131,7 +131,6 @@ struct ScreenshotEditorView: View {
                     Text("Copy to Clipboard")
                         .frame(maxWidth: .infinity)
                 }
-                .keyboardShortcut(.defaultAction)
                 .help("Copy to Clipboard. Esc clears selection first, then copies and closes.")
             }
             .padding(12)
@@ -195,7 +194,18 @@ struct ScreenshotEditorView: View {
                 HStack {
                     Text("Text size")
                     Spacer()
-                    Text("\(Int(document.currentTextSizeControlValue.rounded()))")
+                    TextField(
+                        "Text size",
+                        value: Binding(
+                            get: { document.currentTextSizeControlValue },
+                            set: { document.setTextSizeControlValue($0) }
+                        ),
+                        format: .number.precision(.fractionLength(0 ... 1))
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 58)
+                    .accessibilityLabel("Text size in image pixels")
                 }
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
@@ -204,7 +214,7 @@ struct ScreenshotEditorView: View {
                         get: { document.currentTextSizeControlValue },
                         set: { document.setTextSizeControlValue($0) }
                     ),
-                    in: 14 ... 48
+                    in: 8 ... 256
                 )
                 .accessibilityLabel("Text size")
                 .help("Text size in image pixels")
@@ -225,6 +235,7 @@ struct ScreenshotEditorView: View {
         }
     }
 
+    @ViewBuilder
     private var textControls: some View {
         Picker(
             "Font",
@@ -239,14 +250,37 @@ struct ScreenshotEditorView: View {
         }
         .pickerStyle(.menu)
         .help(document.selectedTool == .text ? "Click the image to type" : "Selected text font")
+
+        if document.pendingTextInsertion != nil {
+            Button("Done") {
+                document.commitPendingTextInsertion()
+            }
+            .help("Finish editing text (⌘Enter or Esc)")
+        } else if document.selectedAnnotation?.kind == .text {
+            HStack {
+                Button("Edit") {
+                    document.beginEditingSelectedText()
+                }
+                .help("Edit selected text (Enter)")
+                Button("Delete") {
+                    document.deleteSelectedText()
+                }
+                .help("Delete selected text")
+            }
+        }
+
+        Text("Enter: new line · ⌘Enter: done\nMove: double-click to edit\nDrag the handle to change width")
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func toolHelp(for tool: EditorTool) -> String {
         switch tool {
         case .move:
-            return "Select blur or text to move and resize"
+            return "Select blur or text to move. Drag the handle to resize; double-click text to edit."
         case .text:
-            return "Click the image to type"
+            return "Click the image to type, or click existing text to edit"
         case .eraser:
             return "Erase annotations without changing the screenshot. Undo restores erased marks."
         case .rectangle:
@@ -318,6 +352,7 @@ private struct EditorCanvasView: View {
     @ObservedObject var document: EditorDocument
     @State private var didBeginInteraction = false
     @State private var baseZoomScale: CGFloat = 1
+    @State private var isEditingDoubleClick = false
     @State private var liveMagnification: CGFloat = 1
     @State private var eraserCursorLocation: CGPoint?
 
@@ -433,9 +468,11 @@ private struct EditorCanvasView: View {
                     .allowsHitTesting(false)
             }
 
-            if let pendingTextInsertion = document.pendingTextInsertion {
+            if let pendingTextInsertion = document.pendingTextInsertion,
+               let textBounds = document.pendingTextBounds {
                 PendingTextInsertionOverlay(
                     pendingTextInsertion: pendingTextInsertion,
+                    textBounds: textBounds,
                     pixelSize: document.pixelSize,
                     onTextChange: document.setPendingText,
                     onCommit: {
@@ -509,11 +546,17 @@ private struct EditorCanvasView: View {
 
                 if didBeginInteraction == false {
                     didBeginInteraction = true
+                    if document.selectedTool == .move,
+                       (NSApp.currentEvent?.clickCount ?? 0) == 2,
+                       document.beginEditingText(at: point) {
+                        isEditingDoubleClick = true
+                        return
+                    }
                     document.beginInteraction(at: eraserStart ?? point)
                     if startsErasing {
                         document.updateInteraction(at: point)
                     }
-                } else {
+                } else if isEditingDoubleClick == false {
                     document.updateInteraction(
                         at: point,
                         constrainProportions: (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.shift)
@@ -523,6 +566,10 @@ private struct EditorCanvasView: View {
             .onEnded { value in
                 defer {
                     didBeginInteraction = false
+                    isEditingDoubleClick = false
+                }
+                guard isEditingDoubleClick == false else {
+                    return
                 }
 
                 let startsErasing = didBeginInteraction == false && document.selectedTool == .eraser
@@ -627,7 +674,11 @@ private struct AnnotationLayersView: View {
                             )
                     }
                 case let .text(text):
-                    AnnotationTextLayer(annotation: text, pixelSize: document.pixelSize)
+                    AnnotationTextLayer(
+                        annotation: text,
+                        layout: document.textLayout(for: text),
+                        pixelSize: document.pixelSize
+                    )
                 }
             }
             if let eraser = document.activeEraser {
@@ -765,23 +816,23 @@ private struct AnnotationCanvasView: View {
 
 private struct AnnotationTextLayer: View {
     let annotation: EditorTextAnnotation
+    let layout: EditorTextLayout
     let pixelSize: CGSize
 
     var body: some View {
-        GeometryReader { proxy in
-            let scale = min(
-                proxy.size.width / max(pixelSize.width, 1),
-                proxy.size.height / max(pixelSize.height, 1)
-            )
-
-            ZStack(alignment: .topLeading) {
-                Text(annotation.text)
-                    .font(annotation.font.swiftUIFont(size: annotation.fontSize * scale))
-                    .foregroundStyle(Color(nsColor: annotation.color.nsColor))
-                    .offset(
-                        x: annotation.origin.x / pixelSize.width * proxy.size.width,
-                        y: annotation.origin.y / pixelSize.height * proxy.size.height
-                    )
+        Canvas { context, size in
+            // Keep native glyph drawing inside SwiftUI's annotation-only eraser group.
+            context.withCGContext { cgContext in
+                cgContext.saveGState()
+                cgContext.scaleBy(
+                    x: size.width / max(pixelSize.width, 1),
+                    y: size.height / max(pixelSize.height, 1)
+                )
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = NSGraphicsContext(cgContext: cgContext, flipped: true)
+                layout.draw(at: annotation.origin)
+                NSGraphicsContext.restoreGraphicsState()
+                cgContext.restoreGState()
             }
         }
     }
@@ -826,56 +877,268 @@ private struct AnnotationSelectionOverlayView: View {
 
 private struct PendingTextInsertionOverlay: View {
     let pendingTextInsertion: PendingTextInsertion
+    let textBounds: CGRect
     let pixelSize: CGSize
     let onTextChange: (String) -> Void
     let onCommit: () -> Void
 
-    @FocusState private var isFocused: Bool
-
     var body: some View {
         GeometryReader { proxy in
-            let scale = min(
-                proxy.size.width / max(pixelSize.width, 1),
-                proxy.size.height / max(pixelSize.height, 1)
-            )
-            let x = pendingTextInsertion.origin.x / pixelSize.width * proxy.size.width
-            let y = pendingTextInsertion.origin.y / pixelSize.height * proxy.size.height
-            let availableWidth = max(proxy.size.width - x - 16, 180)
-            let overlayWidth = min(max(CGFloat(220) * scale, 180), min(availableWidth, 360))
+            let scaleX = proxy.size.width / max(pixelSize.width, 1)
+            let scaleY = proxy.size.height / max(pixelSize.height, 1)
 
-            TextField(
-                "Type here",
-                text: Binding(
-                    get: { pendingTextInsertion.text },
-                    set: onTextChange
-                )
+            InlineTextEditor(
+                pending: pendingTextInsertion,
+                sourceSize: textBounds.size,
+                onTextChange: onTextChange,
+                onCommit: onCommit
             )
-            .textFieldStyle(.plain)
-            .font(pendingTextInsertion.font.swiftUIFont(size: max(pendingTextInsertion.fontSize * scale, 14)))
-            .foregroundStyle(Color(nsColor: pendingTextInsertion.color.nsColor))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .frame(width: overlayWidth, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.black.opacity(0.78))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.white.opacity(0.16), lineWidth: 1)
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Color.accentColor.opacity(0.95), lineWidth: 1.5)
-            )
-            .offset(x: x, y: y)
-            .focused($isFocused)
-            .onAppear {
-                DispatchQueue.main.async {
-                    isFocused = true
-                }
+            .id(pendingTextInsertion.id)
+            .frame(width: textBounds.width * scaleX, height: textBounds.height * scaleY)
+            .overlay {
+                Rectangle()
+                    .stroke(Color.accentColor.opacity(0.95), lineWidth: 1)
+                    .padding(-3)
+                    .allowsHitTesting(false)
             }
-            .onSubmit(onCommit)
+            .offset(x: textBounds.minX * scaleX, y: textBounds.minY * scaleY)
         }
+    }
+}
+
+private struct InlineTextEditor: NSViewRepresentable {
+    let pending: PendingTextInsertion
+    let sourceSize: CGSize
+    let onTextChange: (String) -> Void
+    let onCommit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onTextChange: onTextChange)
+    }
+
+    func makeNSView(context: Context) -> InlineTextEditorHost {
+        let host = InlineTextEditorHost(pending: pending, sourceSize: sourceSize)
+        host.textView.delegate = context.coordinator
+        host.textView.onCommit = onCommit
+        host.textView.onMarkedTextEnd = { [weak coordinator = context.coordinator, weak textView = host.textView] in
+            guard let coordinator, let textView else {
+                return
+            }
+            coordinator.applyStyle(to: textView)
+        }
+        context.coordinator.lastPublishedText = pending.text
+        context.coordinator.pendingStyle = pending
+        context.coordinator.applyStyle(to: host.textView)
+        return host
+    }
+
+    func updateNSView(_ host: InlineTextEditorHost, context: Context) {
+        let coordinator = context.coordinator
+        coordinator.onTextChange = onTextChange
+        host.textView.onCommit = onCommit
+        host.sourceSize = sourceSize
+
+        // Model echoes must not replace the text storage, selection, or IME marked range.
+        if pending.text != coordinator.lastPublishedText, host.textView.hasMarkedText() == false {
+            if host.textView.string != pending.text {
+                let selection = host.textView.selectedRange()
+                host.textView.string = pending.text
+                let length = (pending.text as NSString).length
+                let location = min(selection.location, length)
+                host.textView.setSelectedRange(
+                    NSRange(location: location, length: min(selection.length, length - location))
+                )
+            }
+            coordinator.lastPublishedText = pending.text
+        }
+        coordinator.pendingStyle = pending
+        coordinator.applyStyle(to: host.textView)
+    }
+
+    static func dismantleNSView(_ host: InlineTextEditorHost, coordinator: Coordinator) {
+        if host.window?.firstResponder === host.textView {
+            host.window?.makeFirstResponder(nil)
+        }
+        host.textView.delegate = nil
+        host.textView.onCommit = nil
+        host.textView.onMarkedTextEnd = nil
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var onTextChange: (String) -> Void
+        var lastPublishedText = ""
+        var pendingStyle: PendingTextInsertion?
+        private var appliedFont: EditorTextFont?
+        private var appliedFontSize: CGFloat?
+        private var appliedColor: EditorColor?
+        private let editingUndoManager = UndoManager()
+
+        init(onTextChange: @escaping (String) -> Void) {
+            self.onTextChange = onTextChange
+        }
+
+        func undoManager(for view: NSTextView) -> UndoManager? {
+            editingUndoManager
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else {
+                return
+            }
+            lastPublishedText = textView.string
+            onTextChange(textView.string)
+            applyStyle(
+                to: textView,
+                force: editingUndoManager.isUndoing || editingUndoManager.isRedoing
+            )
+        }
+
+        func applyStyle(to textView: NSTextView, force: Bool = false) {
+            guard let pendingStyle, textView.hasMarkedText() == false,
+                  force || appliedFont != pendingStyle.font ||
+                    appliedFontSize != pendingStyle.fontSize ||
+                    appliedColor != pendingStyle.color else {
+                return
+            }
+            let attributes = EditorTextLayout.attributes(
+                font: pendingStyle.font,
+                fontSize: pendingStyle.fontSize,
+                color: pendingStyle.color
+            )
+            let undoManager = textView.undoManager
+            undoManager?.disableUndoRegistration()
+            textView.textStorage?.setAttributes(
+                attributes,
+                range: NSRange(location: 0, length: (textView.string as NSString).length)
+            )
+            textView.typingAttributes = attributes
+            textView.defaultParagraphStyle = attributes[.paragraphStyle] as? NSParagraphStyle
+            textView.insertionPointColor = pendingStyle.color.nsColor
+            undoManager?.enableUndoRegistration()
+            appliedFont = pendingStyle.font
+            appliedFontSize = pendingStyle.fontSize
+            appliedColor = pendingStyle.color
+        }
+    }
+}
+
+/// The host's bounds stay in source pixels while AppKit scales its frame to canvas points.
+private final class InlineTextEditorHost: NSView {
+    let textView: InlineAnnotationTextView
+    private let textLayout: EditorTextLayout
+    private var didFocus = false
+    var sourceSize: CGSize {
+        didSet { updateGeometry() }
+    }
+
+    override var isFlipped: Bool { true }
+
+    init(pending: PendingTextInsertion, sourceSize: CGSize) {
+        self.sourceSize = sourceSize
+        let layout = EditorTextLayout(
+            text: pending.text,
+            width: pending.width,
+            font: pending.font,
+            fontSize: pending.fontSize,
+            color: pending.color
+        )
+        textLayout = layout
+        textView = InlineAnnotationTextView(frame: .zero, textContainer: layout.textContainer)
+        super.init(frame: CGRect(origin: .zero, size: sourceSize))
+        textView.drawsBackground = false
+        textView.usesAdaptiveColorMappingForDarkAppearance = false
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.allowsUndo = true
+        textView.textContainerInset = .zero
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.heightTracksTextView = false
+        textView.setSelectedRange(NSRange(location: (pending.text as NSString).length, length: 0))
+        textView.setAccessibilityLabel("Annotation text")
+        addSubview(textView)
+        updateGeometry()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        updateGeometry()
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil, didFocus == false else {
+            return
+        }
+        // Focus once per editing session, never on a SwiftUI text/style/zoom refresh.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let window = self.window, self.didFocus == false else {
+                return
+            }
+            self.didFocus = window.makeFirstResponder(self.textView)
+        }
+    }
+
+    private func updateGeometry() {
+        bounds = CGRect(origin: .zero, size: sourceSize)
+        textView.frame = CGRect(origin: .zero, size: sourceSize)
+        if textLayout.textContainer.containerSize.width != sourceSize.width {
+            textLayout.textContainer.containerSize = CGSize(
+                width: sourceSize.width,
+                height: .greatestFiniteMagnitude
+            )
+        }
+    }
+}
+
+private final class InlineAnnotationTextView: NSTextView {
+    var onCommit: (() -> Void)?
+    var onMarkedTextEnd: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 || isCommitShortcut(event) {
+            finishEditing()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if isCommitShortcut(event) {
+            finishEditing()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func unmarkText() {
+        let hadMarkedText = hasMarkedText()
+        super.unmarkText()
+        if hadMarkedText {
+            onMarkedTextEnd?()
+        }
+    }
+
+    private func isCommitShortcut(_ event: NSEvent) -> Bool {
+        (event.keyCode == 36 || event.keyCode == 76) &&
+            event.modifierFlags.contains(.command) &&
+            event.modifierFlags.intersection([.control, .option]).isEmpty
+    }
+
+    private func finishEditing() {
+        unmarkText()
+        onCommit?()
     }
 }

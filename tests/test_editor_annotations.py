@@ -1,4 +1,4 @@
-"""Consumer-visible eraser behavior exercised against the real Swift document."""
+"""Consumer-visible annotation behavior exercised against the real Swift document."""
 
 from pathlib import Path
 import subprocess
@@ -54,6 +54,18 @@ class EditorAnnotationTests(unittest.TestCase):
 
     def test_outside_motion_does_not_erase_along_image_edge(self):
         self.run_scenario("outside-path")
+
+    def test_text_reopening_replacement_cancellation_and_clearing(self):
+        self.run_scenario("text-editing")
+
+    def test_cyrillic_multiline_layout_matches_export_ink_and_bounds(self):
+        self.run_scenario("text-layout-export")
+
+    def test_text_move_and_width_handle_preserve_pointer_offsets(self):
+        self.run_scenario("text-move-resize")
+
+    def test_text_native_point_size_and_near_edge_input(self):
+        self.run_scenario("text-retina-edges")
 
 
 if __name__ == "__main__":
