@@ -116,8 +116,8 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
     ) -> CGRect {
         let naturalCanvasSize = capture.image.size
         let maximumCanvasSize = CGSize(
-            width: maximumContentSize.width,
-            height: max(maximumContentSize.height - ScreenshotEditorView.chromeHeight, 0)
+            width: max(maximumContentSize.width - ScreenshotEditorView.sidebarWidth, 0),
+            height: maximumContentSize.height
         )
         let scale = min(
             1,
@@ -131,18 +131,18 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
             height: naturalCanvasSize.height * scale
         )
         let contentSize = CGSize(
-            width: min(max(fittedCanvasSize.width, minimumContentSize.width), maximumContentSize.width),
-            height: min(
-                max(fittedCanvasSize.height + ScreenshotEditorView.chromeHeight, minimumContentSize.height),
-                maximumContentSize.height
-            )
+            width: min(
+                max(fittedCanvasSize.width + ScreenshotEditorView.sidebarWidth, minimumContentSize.width),
+                maximumContentSize.width
+            ),
+            height: min(max(fittedCanvasSize.height, minimumContentSize.height), maximumContentSize.height)
         )
-        let canvasHeight = max(contentSize.height - ScreenshotEditorView.chromeHeight, 0)
+        let canvasWidth = max(contentSize.width - ScreenshotEditorView.sidebarWidth, 0)
 
         // Center the image over its captured location, including minimum-size letterboxing.
         return CGRect(
-            x: capture.selectionRect.midX - contentSize.width * 0.5,
-            y: capture.selectionRect.midY - canvasHeight * 0.5,
+            x: capture.selectionRect.midX - canvasWidth * 0.5 - ScreenshotEditorView.sidebarWidth,
+            y: capture.selectionRect.midY - contentSize.height * 0.5,
             width: contentSize.width,
             height: contentSize.height
         )

@@ -9,7 +9,7 @@ private enum EditorToolbarContextMode {
 
 struct ScreenshotEditorView: View {
     static let minimumContentSize = CGSize(width: 900, height: 620)
-    static let chromeHeight: CGFloat = 65
+    static let sidebarWidth: CGFloat = 176
 
     @ObservedObject var document: EditorDocument
     var minimumSize: CGSize = Self.minimumContentSize
@@ -18,10 +18,10 @@ struct ScreenshotEditorView: View {
     private let palette: [EditorColor] = [.yellow, .red, .blue, .green, .white]
 
     var body: some View {
-        VStack(spacing: 0) {
+        HStack(spacing: 0) {
             toolbar
             Divider()
-                .frame(height: 1)
+                .frame(width: 1)
             EditorCanvasView(document: document)
         }
         .frame(minWidth: minimumSize.width, minHeight: minimumSize.height)
@@ -29,141 +29,153 @@ struct ScreenshotEditorView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 4) {
-                ForEach(EditorTool.allCases) { tool in
-                    EditorToolbarIconButton(
-                        systemImage: tool.iconName,
-                        isSelected: document.selectedTool == tool,
-                        accessibilityLabel: tool.title
-                    ) {
-                        document.activateTool(tool)
-                    }
-                    .help(toolHelp(for: tool))
-                }
-            }
-            .fixedSize()
-
-            Divider()
-                .frame(height: 20)
-
-            HStack(spacing: 4) {
-                ForEach(Array(palette.enumerated()), id: \.offset) { _, color in
-                    Button {
-                        document.applySelectedColor(color)
-                    } label: {
-                        Circle()
-                            .fill(Color(nsColor: color.nsColor))
-                            .overlay(
-                                Circle()
-                                    .stroke(
-                                        document.selectedColor == color ? Color.primary : Color.clear,
-                                        lineWidth: 2
-                                    )
-                            )
-                            .frame(width: 20, height: 20)
-                            .frame(width: 30, height: 30)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .fixedSize()
-
-            if contextMode != .none {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 8) {
-                        contextControl
-                        if contextMode == .text {
-                            textControls
+        VStack(spacing: 0) {
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 12) {
+                    VStack(spacing: 4) {
+                        ForEach(EditorTool.allCases) { tool in
+                            EditorToolbarIconButton(
+                                systemImage: tool.iconName,
+                                isSelected: document.selectedTool == tool,
+                                accessibilityLabel: tool.title
+                            ) {
+                                document.activateTool(tool)
+                            }
+                            .help(toolHelp(for: tool))
                         }
                     }
-                    .fixedSize(horizontal: true, vertical: false)
+
+                    Divider()
+
+                    LazyVGrid(
+                        columns: Array(repeating: GridItem(.fixed(30)), count: 3),
+                        alignment: .leading,
+                        spacing: 8
+                    ) {
+                        ForEach(Array(palette.enumerated()), id: \.offset) { _, color in
+                            Button {
+                                document.applySelectedColor(color)
+                            } label: {
+                                Circle()
+                                    .fill(Color(nsColor: color.nsColor))
+                                    .overlay(
+                                        Circle()
+                                            .stroke(
+                                                document.selectedColor == color ? Color.primary : Color.clear,
+                                                lineWidth: 2
+                                            )
+                                    )
+                                    .frame(width: 20, height: 20)
+                                    .frame(width: 30, height: 30)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    if contextMode != .none {
+                        Divider()
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            contextControl
+                            if contextMode == .text {
+                                textControls
+                            }
+                        }
+                    }
                 }
-                .scrollIndicators(.never)
-                .frame(maxWidth: .infinity)
-                .frame(height: 36)
-            } else {
-                Spacer(minLength: 0)
+                .padding(12)
             }
+            .scrollIndicators(.never)
 
-            Button("Undo") {
-                document.undoLastAnnotation()
-            }
-            .fixedSize()
-            .help("Undo the last annotation")
+            Divider()
 
-            Button("Copy to Clipboard") {
-                onCopy()
+            VStack(spacing: 8) {
+                Button {
+                    document.undoLastAnnotation()
+                } label: {
+                    Text("Undo")
+                        .frame(maxWidth: .infinity)
+                }
+                .help("Undo the last annotation")
+
+                Button(action: onCopy) {
+                    Text("Copy to Clipboard")
+                        .frame(maxWidth: .infinity)
+                }
+                .keyboardShortcut(.defaultAction)
+                .help("Copy to Clipboard. Esc clears selection first, then copies and closes.")
             }
-            .keyboardShortcut(.defaultAction)
-            .fixedSize()
-            .help("Copy to Clipboard. Esc clears selection first, then copies and closes.")
+            .padding(12)
         }
-        .padding(.horizontal, 12)
-        .frame(height: Self.chromeHeight - 1)
+        .frame(width: Self.sidebarWidth - 1)
     }
 
     @ViewBuilder
     private var contextControl: some View {
-        switch contextMode {
-        case .lineWidth:
-            Slider(value: $document.lineWidth, in: 2 ... 16)
-                .frame(width: 120)
-                .accessibilityLabel("Line width")
-                .help("Line width in image pixels")
-        case .blur:
-            Slider(
-                value: Binding(
-                    get: { document.currentBlurControlValue },
-                    set: { document.setBlurControlValue($0) }
-                ),
-                in: 4 ... 28
-            )
-            .frame(width: 120)
-            .accessibilityLabel("Blur radius")
-            .help("Blur radius in image pixels")
-            Text("\(Int(document.currentBlurControlValue.rounded()))")
+        VStack(alignment: .leading, spacing: 8) {
+            switch contextMode {
+            case .lineWidth:
+                Text("Line width")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Slider(value: $document.lineWidth, in: 2 ... 16)
+                    .accessibilityLabel("Line width")
+                    .help("Line width in image pixels")
+            case .blur:
+                HStack {
+                    Text("Blur radius")
+                    Spacer()
+                    Text("\(Int(document.currentBlurControlValue.rounded()))")
+                }
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 24)
-        case .text:
-            Slider(
-                value: Binding(
-                    get: { document.currentTextSizeControlValue },
-                    set: { document.setTextSizeControlValue($0) }
-                ),
-                in: 14 ... 48
-            )
-            .frame(width: 120)
-            .accessibilityLabel("Text size")
-            .help("Text size in image pixels")
-            Text("\(Int(document.currentTextSizeControlValue.rounded()))")
+                Slider(
+                    value: Binding(
+                        get: { document.currentBlurControlValue },
+                        set: { document.setBlurControlValue($0) }
+                    ),
+                    in: 4 ... 28
+                )
+                .accessibilityLabel("Blur radius")
+                .help("Blur radius in image pixels")
+            case .text:
+                HStack {
+                    Text("Text size")
+                    Spacer()
+                    Text("\(Int(document.currentTextSizeControlValue.rounded()))")
+                }
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 24)
-        case .none:
-            EmptyView()
+                Slider(
+                    value: Binding(
+                        get: { document.currentTextSizeControlValue },
+                        set: { document.setTextSizeControlValue($0) }
+                    ),
+                    in: 14 ... 48
+                )
+                .accessibilityLabel("Text size")
+                .help("Text size in image pixels")
+            case .none:
+                EmptyView()
+            }
         }
     }
 
     private var textControls: some View {
-        HStack(spacing: 8) {
-            Picker(
-                "Font",
-                selection: Binding(
-                    get: { document.currentTextFont },
-                    set: { document.setTextFont($0) }
-                )
-            ) {
-                ForEach(EditorTextFont.allCases) { font in
-                    Text(font.title).tag(font)
-                }
+        Picker(
+            "Font",
+            selection: Binding(
+                get: { document.currentTextFont },
+                set: { document.setTextFont($0) }
+            )
+        ) {
+            ForEach(EditorTextFont.allCases) { font in
+                Text(font.title).tag(font)
             }
-            .pickerStyle(.menu)
-            .frame(width: 120)
-            .help(document.selectedTool == .text ? "Click the image to type" : "Selected text font")
         }
+        .pickerStyle(.menu)
+        .help(document.selectedTool == .text ? "Click the image to type" : "Selected text font")
     }
 
     private func toolHelp(for tool: EditorTool) -> String {
@@ -210,11 +222,18 @@ private struct EditorToolbarIconButton: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.clear)
 
-                Image(systemName: systemImage)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(.primary)
+                HStack(spacing: 8) {
+                    Image(systemName: systemImage)
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(width: 20)
+                    Text(accessibilityLabel)
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer(minLength: 0)
+                }
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 10)
             }
-            .frame(width: 36, height: 36)
+            .frame(height: 36)
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain)
