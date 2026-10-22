@@ -6,6 +6,7 @@ import SwiftUI
 enum EditorTool: String, CaseIterable, Identifiable {
     case move
     case pen
+    case eraser
     case arrow
     case rectangle
     case ellipse
@@ -18,6 +19,7 @@ enum EditorTool: String, CaseIterable, Identifiable {
         switch self {
         case .move: return "cursorarrow"
         case .pen: return "pencil.tip"
+        case .eraser: return "eraser"
         case .arrow: return "arrow.up.right"
         case .rectangle: return "rectangle"
         case .ellipse: return "oval"
@@ -113,6 +115,44 @@ struct EditorStroke {
     var lineWidth: CGFloat
 }
 
+struct EditorEraserStroke {
+    let id = UUID()
+    var points: [CGPoint]
+    var lineWidth: CGFloat
+
+    /// Filled brush footprint in image-pixel coordinates with a top-left origin.
+    var path: CGPath {
+        guard let first = points.first else {
+            return CGMutablePath()
+        }
+
+        if points.count == 1 {
+            let radius = lineWidth / 2
+            return CGPath(
+                ellipseIn: CGRect(
+                    x: first.x - radius,
+                    y: first.y - radius,
+                    width: lineWidth,
+                    height: lineWidth
+                ),
+                transform: nil
+            )
+        }
+
+        let centerline = CGMutablePath()
+        centerline.move(to: first)
+        for point in points.dropFirst() {
+            centerline.addLine(to: point)
+        }
+        return centerline.copy(
+            strokingWithWidth: lineWidth,
+            lineCap: .round,
+            lineJoin: .round,
+            miterLimit: 10
+        )
+    }
+}
+
 struct EditorArrow {
     let id = UUID()
     var start: CGPoint
@@ -172,6 +212,7 @@ struct EditorTextAnnotation {
 
 enum EditorAnnotation: Identifiable {
     case stroke(EditorStroke)
+    case eraser(EditorEraserStroke)
     case arrow(EditorArrow)
     case shape(EditorShape)
     case blur(EditorBlur)
@@ -180,6 +221,7 @@ enum EditorAnnotation: Identifiable {
     var id: UUID {
         switch self {
         case let .stroke(stroke): return stroke.id
+        case let .eraser(eraser): return eraser.id
         case let .arrow(arrow): return arrow.id
         case let .shape(shape): return shape.id
         case let .blur(blur): return blur.id
@@ -216,6 +258,7 @@ struct PendingTextInsertion: Identifiable, Equatable {
 private enum EditorCanvasInteractionState {
     case none
     case drawing
+    case erasing
     case drawingShape(anchor: CGPoint)
     case movingBlur(id: UUID, pointerOffset: CGSize, size: CGSize)
     case resizingBlur(id: UUID, anchor: CGPoint)
@@ -232,12 +275,14 @@ final class EditorDocument: ObservableObject {
     @Published private(set) var selectedColor: EditorColor = .red
     /// Stored in image pixels; preview scales this width with the canvas, just like export.
     @Published var lineWidth: Double = 6
+    @Published var eraserWidth: Double = 32
     @Published var shapeStyle: EditorShapeStyle = .outline
     @Published private(set) var blurRadius: Double = 14
     @Published private(set) var textFont: EditorTextFont = .system
     @Published private(set) var textFontSize: Double = 24
     @Published private(set) var annotations: [EditorAnnotation] = []
     @Published private(set) var activeStroke: EditorStroke?
+    @Published private(set) var activeEraser: EditorEraserStroke?
     @Published private(set) var activeArrow: EditorArrow?
     @Published private(set) var activeShape: EditorShape?
     @Published private(set) var activeBlur: EditorBlur? {
@@ -279,6 +324,11 @@ final class EditorDocument: ObservableObject {
             _ = commitPendingTextInsertion()
         }
 
+        if case .erasing = interactionState {
+            activeEraser = nil
+            interactionState = .none
+        }
+
         if case .drawingShape = interactionState {
             activeShape = nil
             interactionState = .none
@@ -295,6 +345,11 @@ final class EditorDocument: ObservableObject {
     }
 
     func beginInteraction(at point: CGPoint) {
+        if selectedTool == .eraser,
+           CGRect(origin: .zero, size: pixelSize).contains(point) == false {
+            return
+        }
+
         if selectedTool == .move {
             if let selection = selectedAnnotation,
                resizeHandleContains(point, for: selection) {
@@ -326,6 +381,9 @@ final class EditorDocument: ObservableObject {
                 lineWidth: lineWidth
             )
             interactionState = .drawing
+        case .eraser:
+            activeEraser = EditorEraserStroke(points: [point], lineWidth: CGFloat(eraserWidth))
+            interactionState = .erasing
         case .arrow:
             activeArrow = EditorArrow(
                 start: point,
@@ -357,6 +415,8 @@ final class EditorDocument: ObservableObject {
         switch interactionState {
         case .drawing:
             updateDrawingInteraction(at: point)
+        case .erasing:
+            updateErasingInteraction(at: point)
         case let .drawingShape(anchor):
             updateShapeInteraction(from: anchor, to: point, constrainProportions: constrainProportions)
         case let .movingBlur(id, pointerOffset, size):
@@ -383,6 +443,12 @@ final class EditorDocument: ObservableObject {
         switch interactionState {
         case .drawing:
             finalizeDrawingInteraction(at: point)
+        case .erasing:
+            updateErasingInteraction(at: point)
+            if let activeEraser {
+                annotations.append(.eraser(activeEraser))
+            }
+            activeEraser = nil
         case let .drawingShape(anchor):
             updateShapeInteraction(from: anchor, to: point, constrainProportions: constrainProportions)
             if let activeShape, activeShape.rect.width > 1, activeShape.rect.height > 1 {
@@ -395,6 +461,12 @@ final class EditorDocument: ObservableObject {
     }
 
     func undoLastAnnotation() {
+        if activeEraser != nil {
+            activeEraser = nil
+            interactionState = .none
+            return
+        }
+
         if pendingTextInsertion != nil {
             pendingTextInsertion = nil
             return
@@ -542,10 +614,17 @@ final class EditorDocument: ObservableObject {
         graphicsContext.cgContext.scaleBy(x: scaleX, y: scaleY)
         baseImage.draw(in: CGRect(origin: .zero, size: pixelSize))
 
+        let isolateAnnotations = hasEraser
+        if isolateAnnotations {
+            graphicsContext.cgContext.beginTransparencyLayer(auxiliaryInfo: nil)
+        }
+
         for annotation in annotations {
             switch annotation {
             case let .stroke(stroke):
                 drawStroke(stroke)
+            case let .eraser(eraser):
+                drawEraser(eraser)
             case let .arrow(arrow):
                 drawArrow(arrow)
             case let .shape(shape):
@@ -555,6 +634,12 @@ final class EditorDocument: ObservableObject {
             case let .text(text):
                 drawText(text)
             }
+        }
+        if let activeEraser {
+            drawEraser(activeEraser)
+        }
+        if isolateAnnotations {
+            graphicsContext.cgContext.endTransparencyLayer()
         }
         graphicsContext.cgContext.restoreGState()
 
@@ -578,6 +663,15 @@ final class EditorDocument: ObservableObject {
             result.append(.blur(activeBlur))
         }
         return result
+    }
+
+    var hasEraser: Bool {
+        activeEraser != nil || annotations.contains {
+            if case .eraser = $0 {
+                return true
+            }
+            return false
+        }
     }
 
     var currentBlurControlValue: Double {
@@ -649,6 +743,15 @@ final class EditorDocument: ObservableObject {
         return textAnnotation(for: selectedAnnotation.id)
     }
 
+    private func updateErasingInteraction(at point: CGPoint) {
+        guard var activeEraser, activeEraser.points.last != point else {
+            return
+        }
+
+        activeEraser.points.append(point)
+        self.activeEraser = activeEraser
+    }
+
     private func updateDrawingInteraction(at point: CGPoint) {
         switch selectedTool {
         case .move:
@@ -673,7 +776,7 @@ final class EditorDocument: ObservableObject {
                 rect: normalizedRect(from: startPoint, to: point),
                 radius: blurRadius
             )
-        case .rectangle, .ellipse, .text:
+        case .eraser, .rectangle, .ellipse, .text:
             break
         }
     }
@@ -734,7 +837,7 @@ final class EditorDocument: ObservableObject {
                 select(EditorSelection(id: activeBlur.id, kind: .blur))
             }
             self.activeBlur = nil
-        case .rectangle, .ellipse, .text:
+        case .eraser, .rectangle, .ellipse, .text:
             break
         }
     }
@@ -776,8 +879,9 @@ final class EditorDocument: ObservableObject {
             return true
         }
 
-        if activeStroke != nil || activeArrow != nil || activeShape != nil || activeBlur != nil {
+        if activeStroke != nil || activeEraser != nil || activeArrow != nil || activeShape != nil || activeBlur != nil {
             activeStroke = nil
+            activeEraser = nil
             activeArrow = nil
             activeShape = nil
             activeBlur = nil
@@ -856,7 +960,7 @@ final class EditorDocument: ObservableObject {
                 if textBounds(for: text).insetBy(dx: -12, dy: -12).contains(point) {
                     return EditorSelection(id: text.id, kind: .text)
                 }
-            case .stroke, .arrow, .shape:
+            case .stroke, .eraser, .arrow, .shape:
                 continue
             }
         }
@@ -1003,6 +1107,20 @@ final class EditorDocument: ObservableObject {
 
         stroke.color.nsColor.setStroke()
         path.stroke()
+    }
+
+    private func drawEraser(_ eraser: EditorEraserStroke) {
+        guard let context = NSGraphicsContext.current?.cgContext else {
+            return
+        }
+
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.translateBy(x: 0, y: pixelSize.height)
+        context.scaleBy(x: 1, y: -1)
+        context.setBlendMode(.clear)
+        context.addPath(eraser.path)
+        context.fillPath()
     }
 
     private func drawArrow(_ arrow: EditorArrow) {

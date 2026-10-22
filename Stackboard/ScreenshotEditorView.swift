@@ -4,6 +4,7 @@ import SwiftUI
 private enum EditorToolbarContextMode {
     case none
     case lineWidth
+    case eraser
     case shape
     case blur
     case text
@@ -73,6 +74,31 @@ struct ScreenshotEditorView: View {
                             }
                             .buttonStyle(.plain)
                         }
+                        ColorPicker(
+                            "Custom color",
+                            selection: Binding(
+                                get: { Color(nsColor: document.selectedColor.nsColor) },
+                                set: { newColor in
+                                    guard let color = NSColor(newColor).usingColorSpace(.sRGB) else {
+                                        return
+                                    }
+                                    document.applySelectedColor(
+                                        EditorColor(
+                                            red: Double(color.redComponent),
+                                            green: Double(color.greenComponent),
+                                            blue: Double(color.blueComponent),
+                                            alpha: Double(color.alphaComponent)
+                                        )
+                                    )
+                                }
+                            ),
+                            supportsOpacity: true
+                        )
+                        .labelsHidden()
+                        .controlSize(.small)
+                        .frame(width: 30, height: 30)
+                        .accessibilityLabel("Custom color")
+                        .help("Choose a custom color and opacity")
                     }
 
                     if contextMode != .none {
@@ -99,7 +125,7 @@ struct ScreenshotEditorView: View {
                     Text("Undo")
                         .frame(maxWidth: .infinity)
                 }
-                .help("Undo the last annotation")
+                .help("Undo the last annotation or erase stroke")
 
                 Button(action: onCopy) {
                     Text("Copy to Clipboard")
@@ -119,6 +145,17 @@ struct ScreenshotEditorView: View {
             switch contextMode {
             case .lineWidth:
                 lineWidthControl
+            case .eraser:
+                HStack {
+                    Text("Eraser size")
+                    Spacer()
+                    Text("\(Int(document.eraserWidth.rounded()))")
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                Slider(value: $document.eraserWidth, in: 8 ... 128)
+                    .accessibilityLabel("Eraser size")
+                    .help("Eraser diameter in image pixels")
             case .shape:
                 Text("Shape style")
                     .font(.system(size: 12, weight: .medium))
@@ -210,6 +247,8 @@ struct ScreenshotEditorView: View {
             return "Select blur or text to move and resize"
         case .text:
             return "Click the image to type"
+        case .eraser:
+            return "Erase annotations without changing the screenshot. Undo restores erased marks."
         case .rectangle:
             return "Draw a rectangle. Hold Shift for a square."
         case .ellipse:
@@ -232,6 +271,8 @@ struct ScreenshotEditorView: View {
             }
         case .pen, .arrow:
             return .lineWidth
+        case .eraser:
+            return .eraser
         case .rectangle, .ellipse:
             return .shape
         case .blur:
@@ -278,6 +319,7 @@ private struct EditorCanvasView: View {
     @State private var didBeginInteraction = false
     @State private var baseZoomScale: CGFloat = 1
     @State private var liveMagnification: CGFloat = 1
+    @State private var eraserCursorLocation: CGPoint?
 
     var body: some View {
         GeometryReader { proxy in
@@ -363,6 +405,33 @@ private struct EditorCanvasView: View {
                 .fill(Color.clear)
                 .contentShape(Rectangle())
                 .gesture(dragGesture(for: canvasSize))
+                .onContinuousHover { phase in
+                    guard document.selectedTool == .eraser else {
+                        return
+                    }
+                    switch phase {
+                    case let .active(location):
+                        eraserCursorLocation = location
+                    case .ended:
+                        eraserCursorLocation = nil
+                    }
+                }
+
+            if document.selectedTool == .eraser, let eraserCursorLocation {
+                let diameter = document.activeEraser?.lineWidth ?? CGFloat(document.eraserWidth)
+                Ellipse()
+                    .stroke(.black.opacity(0.8), lineWidth: 3)
+                    .overlay(
+                        Ellipse()
+                            .stroke(.white, lineWidth: 1)
+                    )
+                    .frame(
+                        width: diameter / max(document.pixelSize.width, 1) * canvasSize.width,
+                        height: diameter / max(document.pixelSize.height, 1) * canvasSize.height
+                    )
+                    .position(eraserCursorLocation)
+                    .allowsHitTesting(false)
+            }
 
             if let pendingTextInsertion = document.pendingTextInsertion {
                 PendingTextInsertionOverlay(
@@ -413,20 +482,37 @@ private struct EditorCanvasView: View {
     private func dragGesture(for canvasSize: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                let isDrawingShape = didBeginInteraction &&
-                    (document.selectedTool == .rectangle || document.selectedTool == .ellipse)
+                // Coalesced drag events must not lose the start of an eraser stroke.
+                let startsErasing = didBeginInteraction == false && document.selectedTool == .eraser
+                let eraserStart = startsErasing ? mapToImageSpace(
+                    location: value.startLocation,
+                    canvasSize: canvasSize,
+                    clamp: false
+                ) : nil
+                guard startsErasing == false || eraserStart != nil else {
+                    return
+                }
+                let allowsRawEndpoint = (didBeginInteraction || startsErasing) &&
+                    (document.selectedTool == .rectangle || document.selectedTool == .ellipse ||
+                        document.selectedTool == .eraser)
                 guard let point = mapToImageSpace(
                     location: value.location,
                     canvasSize: canvasSize,
                     clamp: false,
-                    allowOutsideBounds: isDrawingShape
+                    allowOutsideBounds: allowsRawEndpoint
                 ) else {
                     return
+                }
+                if document.selectedTool == .eraser {
+                    eraserCursorLocation = value.location
                 }
 
                 if didBeginInteraction == false {
                     didBeginInteraction = true
-                    document.beginInteraction(at: point)
+                    document.beginInteraction(at: eraserStart ?? point)
+                    if startsErasing {
+                        document.updateInteraction(at: point)
+                    }
                 } else {
                     document.updateInteraction(
                         at: point,
@@ -439,20 +525,33 @@ private struct EditorCanvasView: View {
                     didBeginInteraction = false
                 }
 
-                let isDrawingShape = didBeginInteraction &&
-                    (document.selectedTool == .rectangle || document.selectedTool == .ellipse)
+                let startsErasing = didBeginInteraction == false && document.selectedTool == .eraser
+                let eraserStart = startsErasing ? mapToImageSpace(
+                    location: value.startLocation,
+                    canvasSize: canvasSize,
+                    clamp: false
+                ) : nil
+                guard startsErasing == false || eraserStart != nil else {
+                    return
+                }
+                let allowsRawEndpoint = (didBeginInteraction || startsErasing) &&
+                    (document.selectedTool == .rectangle || document.selectedTool == .ellipse ||
+                        document.selectedTool == .eraser)
 
                 guard let point = mapToImageSpace(
                     location: value.location,
                     canvasSize: canvasSize,
-                    clamp: didBeginInteraction && isDrawingShape == false,
-                    allowOutsideBounds: isDrawingShape
+                    clamp: didBeginInteraction && allowsRawEndpoint == false,
+                    allowOutsideBounds: allowsRawEndpoint
                 ) else {
                     return
                 }
+                if document.selectedTool == .eraser {
+                    eraserCursorLocation = value.location
+                }
 
                 if didBeginInteraction == false {
-                    document.beginInteraction(at: point)
+                    document.beginInteraction(at: eraserStart ?? point)
                 }
                 document.endInteraction(
                     at: point,
@@ -494,34 +593,49 @@ private struct AnnotationLayersView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            // Keep the same stacking order as export: blur patches replace earlier marks,
-            // while annotations added after a blur remain above it.
-            ZStack(alignment: .topLeading) {
-                ForEach(document.committedAndActiveAnnotations) { annotation in
-                    switch annotation {
-                    case .stroke, .arrow, .shape:
-                        AnnotationCanvasView(annotation: annotation, pixelSize: document.pixelSize)
-                    case let .blur(blur):
-                        if let image = document.blurImage(for: blur) {
-                            Image(nsImage: image)
-                                .resizable()
-                                .interpolation(.high)
-                                .frame(
-                                    width: blur.rect.width / document.pixelSize.width * proxy.size.width,
-                                    height: blur.rect.height / document.pixelSize.height * proxy.size.height
-                                )
-                                .offset(
-                                    x: blur.rect.minX / document.pixelSize.width * proxy.size.width,
-                                    y: blur.rect.minY / document.pixelSize.height * proxy.size.height
-                                )
-                        }
-                    case let .text(text):
-                        AnnotationTextLayer(annotation: text, pixelSize: document.pixelSize)
+            if document.hasEraser {
+                annotationLayers(canvasSize: proxy.size)
+                    .drawingGroup(opaque: false, colorMode: .nonLinear)
+            } else {
+                annotationLayers(canvasSize: proxy.size)
+            }
+        }
+    }
+
+    private func annotationLayers(canvasSize: CGSize) -> some View {
+        // Match export ordering, isolating erase masks from the source image.
+        ZStack(alignment: .topLeading) {
+            ForEach(document.committedAndActiveAnnotations) { annotation in
+                switch annotation {
+                case .stroke, .arrow, .shape:
+                    AnnotationCanvasView(annotation: annotation, pixelSize: document.pixelSize)
+                case .eraser:
+                    AnnotationCanvasView(annotation: annotation, pixelSize: document.pixelSize)
+                        .blendMode(.destinationOut)
+                case let .blur(blur):
+                    if let image = document.blurImage(for: blur) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .interpolation(.high)
+                            .frame(
+                                width: blur.rect.width / document.pixelSize.width * canvasSize.width,
+                                height: blur.rect.height / document.pixelSize.height * canvasSize.height
+                            )
+                            .offset(
+                                x: blur.rect.minX / document.pixelSize.width * canvasSize.width,
+                                y: blur.rect.minY / document.pixelSize.height * canvasSize.height
+                            )
                     }
+                case let .text(text):
+                    AnnotationTextLayer(annotation: text, pixelSize: document.pixelSize)
                 }
             }
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            if let eraser = document.activeEraser {
+                AnnotationCanvasView(annotation: .eraser(eraser), pixelSize: document.pixelSize)
+                    .blendMode(.destinationOut)
+            }
         }
+        .frame(width: canvasSize.width, height: canvasSize.height, alignment: .topLeading)
     }
 }
 
@@ -560,6 +674,8 @@ private struct AnnotationCanvasView: View {
             switch annotation {
             case let .stroke(stroke):
                 drawStroke(stroke, in: &context)
+            case let .eraser(eraser):
+                context.fill(Path(eraser.path), with: .color(.white))
             case let .arrow(arrow):
                 drawArrow(arrow, in: &context)
             case let .shape(shape):
