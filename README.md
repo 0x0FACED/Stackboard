@@ -1,368 +1,108 @@
-# Stackboard
+<p align="center">
+  <img src="Stackboard/Assets.xcassets/AppIcon.appiconset/AppIcon-128@2x.png" width="112" height="112" alt="Stackboard app icon">
+</p>
 
-[![CI](https://github.com/0x0FACED/stackboard/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/0x0FACED/stackboard/actions/workflows/ci.yml)
+<h1 align="center">Stackboard</h1>
 
-**Скриншоты с аннотациями и история буфера обмена для macOS.**
+<p align="center"><strong>Screenshots, annotations, and clipboard history for macOS.</strong></p>
 
-Stackboard работает в строке меню: выделите область экрана или откройте готовую картинку, добавьте стрелки или текст и сохраните либо скопируйте результат. Текст, изображения и ссылки на файлы из буфера обмена сохраняются в локальную историю, чтобы к ним можно было вернуться позже.
+<p align="center">
+  Capture a region, add arrows and notes, then copy or save the result.<br>
+  Need something you copied earlier? Find it in your clipboard history.
+</p>
 
-[Скачать](https://github.com/0x0FACED/stackboard/releases/latest) · [Установка](#установка) · [Горячие клавиши](#горячие-клавиши) · [Сообщить об ошибке](https://github.com/0x0FACED/stackboard/issues)
+<p align="center">
+  <a href="https://github.com/0x0FACED/stackboard/releases/latest"><strong>Download for macOS</strong></a> ·
+  <a href="#install">Install with Homebrew</a> ·
+  <a href="docs/guide.md">User guide</a>
+</p>
 
-## Возможности
+<p align="center">macOS 13.5+ · Apple Silicon &amp; Intel · Lives in your menu bar</p>
 
-- **Скриншоты области экрана.** Новый снимок можно сделать, не закрывая предыдущий редактор — в том числе снять сам редактор.
-- **Открытие готовых картинок.** Из файла или отдельной командой из буфера обмена; каждая картинка получает новое окно редактора со своей историей.
-- **Аннотации.** Рисование от руки, стрелки, прямоугольники и эллипсы с заливкой или контуром, размытие и текст. Настраиваются произвольный цвет и прозрачность, толщина линий и контуров, сила размытия, размер и шрифт текста.
-- **Редактирование.** Выделение, перемещение, изменение размеров, оформления, удаление и дублирование всех графических объектов; многострочный текст с повторным редактированием; ластик без изменения исходного снимка; полноценные Undo/Redo с отдельной историей каждого окна; масштабирование жестом на трекпаде.
-- **Обрезка в редакторе.** Уточнение границ после захвата, без масштабирования пикселей и сведения аннотаций в картинку. Обрезка отменяется и повторяется одним шагом.
-- **Сохранение в файлы.** PNG и JPEG в исходном разрешении, выбор имени и папки, настройка качества JPEG. Сохранение не закрывает редактор.
-- **История буфера обмена.** Текст, изображения и ссылки на файлы; поиск, предпросмотр, закрепление и повторное копирование. Последние восемь записей доступны прямо из меню.
-- **Очистка истории.** Хранение на 7, 30 или 90 дней либо без удаления по сроку. Закреплённые записи исключены из автоматической очистки.
-- **Настраиваемые горячие клавиши.** Отдельные глобальные сочетания для скриншота и открытия истории.
+![Stackboard demo: selecting a screen region, drawing an arrow, adding a note, and copying the annotated image into a sample message.](docs/media/stackboard-demo.gif)
 
-## Требования
+<p align="center">
+  <em>Capture it. Make your point. Share the result.</em><br>
+  <a href="docs/media/stackboard-editor.png">Still preview</a> ·
+  <a href="docs/media/stackboard-demo.mp4">Watch as video</a>
+</p>
 
-- **macOS 13.5 или новее.**
-- **Apple Silicon или Intel.** Релизный архив содержит Universal-приложение: `arm64` и `x86_64`.
-- Разрешение **Screen Recording** для скриншотов. Для открытия готовых изображений и истории буфера обмена оно не нужно.
+## A screenshot that explains itself
 
-## Установка
+Point out a UI issue, mark up a design, or show someone exactly where to click.
+
+- **Make your point.** Add arrows, freehand drawings, text, rectangles, and ellipses. Choose your colors, line widths, and fonts.
+- **Keep editing.** Move and resize annotations, edit your text, erase your marks, or undo and redo changes. Each editor window has its own history.
+- **Get the framing right.** Crop after capture without flattening your annotations. Keep the original image resolution when you copy or export.
+- **Start with an existing image.** Open a file or image from the clipboard and use the same editing tools. The source file stays unchanged unless you explicitly save over it.
+- **Take the result anywhere.** Copy the finished image to paste into another app, or save it as PNG or JPEG. Saving keeps the editor open; copying closes it.
+
+## Your clipboard, a few copies later
+
+That link, snippet, or image you copied is still within reach.
+
+Press **`⌘⇧V`** to open clipboard history. Search your copied text and file references, preview an entry, and choose **Copy Again**. Then paste it wherever you need it with `⌘V`.
+
+Pin entries you want to keep, choose an automatic cleanup period, or grab one of the eight most recent items straight from the menu bar. History is stored locally on your Mac and survives app restarts, with no cloud sync.
+
+> Clipboard history can include passwords and other sensitive text. Stackboard does not currently filter private clipboard markers or offer per-app exclusions or a recording pause. See [Privacy and storage](docs/guide.md#privacy-and-storage) before using it with sensitive content.
+
+## Install
+
+Requires **macOS 13.5 or later**. The release is a **Universal app** for Apple Silicon and Intel Macs.
 
 ### Homebrew
 
-Если [Homebrew](https://brew.sh) уже установлен:
+With [Homebrew](https://brew.sh) installed:
 
 ```sh
 brew install --cask 0x0faced/stackboard/stackboard
 open /Applications/Stackboard.app
 ```
 
-При сообщении об `untrusted tap/cask` см. [настройку доверия Homebrew](#homebrew-не-доверяет-cask).
+### Direct download
 
-### Вручную
+Download **`Stackboard.zip`** from the [latest release](https://github.com/0x0FACED/stackboard/releases/latest), extract it, and move **Stackboard.app** to **Applications**. Open the app and look for its icon in the menu bar.
 
-1. Откройте [последний релиз](https://github.com/0x0FACED/stackboard/releases/latest).
-2. Скачайте **`Stackboard.zip`** и **`SHA256SUMS`** из одного релиза в одну папку.
-3. В терминале, находясь в этой папке, проверьте архив:
+You can [verify the download with SHA-256](docs/guide.md#install-manually-and-verify-the-download) using the release's `SHA256SUMS` file.
 
-   ```sh
-   shasum -a 256 -c SHA256SUMS
-   ```
+> **First launch:** releases are ad-hoc signed, without Developer ID signing or Apple notarization. macOS may block the app, including when installed through Homebrew. After trying to open it, go to **System Settings → Privacy & Security → Open Anyway**, if available and you trust the download. Do not disable Gatekeeper. [First-launch help →](docs/guide.md#first-launch)
 
-4. Распакуйте ZIP и перенесите `Stackboard.app` в `/Applications`.
-5. Откройте приложение.
+To take screenshots, allow **Screen Recording** in **System Settings → Privacy & Security** when prompted. Restart Stackboard if macOS asks. This permission is not needed for clipboard history or editing existing images.
 
-SHA-256 проверяет целостность архива, но не удостоверяет издателя.
+## Your first screenshot
 
-> Релизы подписаны **ad-hoc**, без Developer ID и notarization. macOS может заблокировать первый запуск; Homebrew не отменяет проверки Gatekeeper. Как разрешить запуск — в разделе ниже.
+1. Press **`⌘⇧S`** and drag to select an area of your screen.
+2. Add an arrow, a note, or a shape using the editor's left sidebar.
+3. Choose **Copy to Clipboard** and paste the image into your message, issue, or document. Prefer a file? Choose **Save…** or press `⌘S`.
 
-## Первый запуск
+You can open another screenshot without closing the previous editor.
 
-### macOS блокирует приложение
+### Handy shortcuts
 
-После попытки открытия перейдите в **Системные настройки → Конфиденциальность и безопасность** и нажмите **«Всё равно открыть»**, если этот пункт доступен и вы доверяете скачанному приложению.
-
-Не отключайте Gatekeeper глобально. На управляемом рабочем Mac корпоративная политика может запрещать такой запуск.
-
-### Разрешение на скриншоты
-
-При первом скриншоте Stackboard запросит доступ к экрану. Разрешите его в **Системные настройки → Конфиденциальность и безопасность → Запись экрана** (*Screen Recording*; в новых версиях macOS раздел также упоминает системное аудио).
-
-Перезапустите Stackboard, если macOS этого требует. После обновления ad-hoc-приложения разрешение может потребоваться повторно; Homebrew не выдаёт его автоматически.
-
-После запуска основные действия доступны через значок Stackboard в строке меню.
-
-## Использование
-
-### Горячие клавиши
-
-| Действие | По умолчанию |
+| Action | Shortcut |
 | --- | --- |
-| Новый скриншот | `⌘⇧S` — Command + Shift + S |
-| Открыть историю | `⌘⇧V` — Command + Shift + V |
-| Открыть изображение из файла | `⌘O` — когда Stackboard активен |
+| Capture a screen region | `⌘⇧S` |
+| Open clipboard history | `⌘⇧V` |
+| Open an image file, while Stackboard is active | `⌘O` |
+| Save from the editor | `⌘S` |
+| Undo / Redo | `⌘Z` / `⌘⇧Z` |
 
-Глобальные сочетания для скриншота и истории можно изменить в меню **Keyboard Shortcuts…**: нажмите на поле и введите новое сочетание с хотя бы одной клавишей-модификатором. **Reset Defaults** вернёт значения по умолчанию. `⌘O` — обычная команда приложения, не глобальная горячая клавиша.
+The capture and history shortcuts work globally. Change them in **Keyboard Shortcuts…** from the Stackboard menu if they conflict with another app.
 
-Если сочетание занято macOS или другим приложением, окно настроек покажет конфликт. Выберите другое сочетание; действия также доступны из меню.
+## A few things to know
 
-### Сделать и отредактировать скриншот
+- **Keep important results.** Save or copy an image before closing its editor. PNG and JPEG exports are finished images, not editable Stackboard documents.
+- **Blur is not secure redaction.** Do not rely on blur to remove secrets from an image.
+- **History is not a backup.** File entries retain paths, not copies of the files. Automatic cleanup defaults to 30 days; pins are excluded from automatic cleanup, but **Clear History** removes them too. An entry-count limit still applies when age-based cleanup is off.
 
-1. Нажмите `⌘⇧S` или выберите **New Screenshot** в меню.
-2. Выделите область мышью. `Esc` отменяет выбор области.
-3. Выберите инструмент в левой боковой панели редактора и добавьте аннотации:
+## Help and feedback
 
-   | Инструмент | Назначение |
-   | --- | --- |
-   | **Move** | Выбрать и переместить рисунок, стрелку, фигуру, текст или размытие; маркерами изменить размер или концы стрелки; двойным щелчком открыть текст |
-   | **Crop** | Уточнить границы снимка; потянуть маркеры рамки и применить обрезку |
-   | **Pen** | Рисовать от руки |
-   | **Eraser** | Стирать фрагменты любых аннотаций, сохраняя исходный скриншот |
-   | **Arrow** | Добавить стрелку |
-   | **Rectangle** | Нарисовать прямоугольник; с `Shift` — квадрат |
-   | **Ellipse** | Нарисовать эллипс; с `Shift` — круг |
-   | **Blur** | Размыть прямоугольную область |
-   | **Text** | Нажать на изображение и ввести многострочный текст или открыть существующую надпись |
+- [User guide](docs/guide.md) — editor tools, image formats, clipboard history, and data storage.
+- [Troubleshooting](docs/guide.md#troubleshooting) — first launch, permissions, Homebrew trust, and shortcut conflicts.
+- [Updates and uninstalling](docs/guide.md#update).
+- [Report a bug or suggest an improvement](https://github.com/0x0FACED/stackboard/issues). Include your Stackboard version, macOS version, and steps to reproduce. Keep private clipboard contents and screenshots out of bug reports.
 
-   Для фигур выберите **Outline** (только контур) или **Filled** (заливка). В режиме **Outline** ползунок **Line width** задаёт толщину контура в пикселях исходного изображения. Удерживайте `Shift` во время рисования для сохранения равных ширины и высоты.
+---
 
-   Рядом с быстрыми цветами находится образец **Custom color**, открывающий системную палитру macOS с выбором произвольного цвета и прозрачности. Выбор применяется к новым рисункам, стрелкам, фигурам и тексту, а также к выбранному цветному объекту.
-
-   Размер кисти **Eraser** задаётся ползунком **Eraser size** в пикселях исходного изображения. Один проход ластика — один шаг **Undo**; под стёртыми аннотациями снова виден исходный снимок. Поверх стёртого участка можно рисовать заново.
-
-   В **Move** нажмите на линию рисунка или стрелки, контур фигуры либо внутреннюю область залитой фигуры, текста или размытия. Если объекты перекрываются, выбирается верхний видимый. Пустая середина контурной фигуры не перекрывает выбор объектов под ней; стёртые ластиком участки не выбираются.
-
-   Перетаскивайте объект за выбранный участок: смещение относительно указателя сохраняется. У стрелки два маркера для независимого изменения начала и конца; у рисунков, фигур и размытия — маркер справа снизу. `Shift` при изменении размера сохраняет пропорции. Настройки боковой панели меняют выбранный объект: цвет и толщину рисунка/стрелки, заливку и контур фигуры, силу размытия или оформление текста.
-
-   Текст вводится прямо на изображении, без фоновой плашки. `Enter` добавляет строку; `⌘Enter`, `Esc` или **Done** завершают ввод, не копируя и не закрывая редактор. Для повторного редактирования нажмите на надпись инструментом **Text**, дважды щёлкните инструментом **Move** либо выделите её и нажмите `Enter` или **Edit**.
-
-   Инструментом **Move** перетаскивайте рамку текста; маркер справа посередине меняет её ширину и переносы строк, но не растягивает шрифт. **Text size** задаётся ползунком или числом от 8 до 256 в пикселях исходного снимка; начальный размер учитывает Retina. Шрифт, цвет, положение и переносы одинаковы во время ввода, после его завершения и в экспорте. Текст за границами снимка обрезается при отображении и экспорте, но сохраняется в объекте: переместите рамку внутрь снимка или увеличьте её ширину.
-
-   Выделенный объект можно удалить клавишей `Delete` или кнопкой **Delete**, а дублировать — `⌘D` или **Duplicate**. Дубликат получает небольшое смещение, если позволяет размер снимка, и добавляется поверх существующих аннотаций; прежние штрихи ластика на него не переносятся. Во время ввода `Delete` редактирует символы, а не удаляет объект; если стереть всё содержимое надписи и завершить ввод, пустая надпись удалится.
-
-4. В этой же панели настройте толщину линии или контура, размер ластика, силу размытия или размер и шрифт текста. Если окно невысокое, прокрутите панель, чтобы добраться до настроек.
-5. При необходимости увеличьте изображение жестом на трекпаде. **Undo** / `⌘Z` отменяет операцию, **Redo** / `⌘⇧Z` повторяет её.
-6. Нажмите **Save…** или `⌘S`, чтобы сохранить результат в файл, либо **Copy to Clipboard**, чтобы скопировать его в буфер обмена и историю. Копирование закрывает редактор; сохранение оставляет его открытым.
-
-Для повторной обрезки нажмите **Crop**. Восемь маркеров меняют края и углы рамки; перетаскивание внутри переносит её, а снаружи выделяет новую область. В панели показан итоговый размер в пикселях. **Apply** / `Enter` применяет обрезку, **Cancel** / `Esc` отменяет рамку, не копируя и не закрывая окно. Выбор другого инструмента тоже отменяет рамку. **Save…**, `⌘S` и **Copy to Clipboard** сначала применяют текущую рамку.
-
-Обрезка сохраняет нативные пиксели и Retina-масштаб. Аннотации смещаются вместе со снимком и остаются редактируемыми: пересекающие границу части скрываются без изменения формы и переносов текста, полностью внешние объекты удаляются. Ластик и размытие сохраняют вид оставшейся области. Один **Undo** возвращает прежние границы, пиксели и все объекты; **Redo** повторяет обрезку. Пока рамка не применена, **Undo** только отменяет её.
-
-В каждом новом редакторе выбран красный цвет. Выбор цвета в одном окне не меняет настройки других редакторов.
-
-История каждого редактора независима: отменяются и повторяются добавление, стирание, перемещение, изменение размеров, текста и оформления, удаление и дублирование, а также обрезка снимка. Одно перетаскивание объекта или ползунка и одна применённая обрезка — один шаг. После отмены новая операция заменяет ветку Redo; простое выделение, неизменённое значение, отменённая рамка обрезки или жест её не сбрасывают.
-
-Во время ввода текста или числа кнопки **Undo/Redo** и сочетания клавиш работают с нативной историей этого поля, не затрагивая другие объекты. После завершения ввода вся правка надписи или числового поля становится одной операцией истории документа.
-
-В редакторе `Esc` сначала отменяет рамку обрезки, завершает ввод текста, отменяет незавершённое рисование, стирание, перемещение или изменение размера либо снимает выделение. Когда активного действия и выделения нет, `Esc` копирует результат и закрывает окно.
-
-В диалоге **Save…** выберите имя, папку и **Format**: PNG (без потерь, с сохранением прозрачности) или JPEG. Для JPEG доступен ползунок **JPEG quality** от 0 до 100%; прозрачные участки сохраняются на белом фоне. Экспорт включает аннотации и сохраняет нативное разрешение снимка или оставшейся после **Crop** области, независимо от размера окна и масштаба холста. Активный ввод текста или числа завершается перед открытием диалога. Отмена и ошибка записи не закрывают редактор; при ошибке показывается сообщение.
-
-Сохраните или скопируйте результат перед закрытием окна или выходом из приложения. Файл PNG/JPEG — готовое изображение, а не документ с редактируемыми объектами. **Blur не следует считать надёжным способом удаления секретов из изображения.**
-
-### Открыть готовое изображение
-
-- Выберите **Open Image…** в меню значка Stackboard или **File → Open Image…**. Когда приложение активно, доступно `⌘O`. В диалоге выберите один файл.
-- Для изображения, уже скопированного в буфер, выберите **Open Image from Clipboard** в том же меню или меню **File**. Команда читает сами пиксели изображения, а не путь, ссылку или скопированный в Finder файл. Обычный `⌘V` при вводе текста не меняется.
-- Каждое открытие создаёт отдельный редактор; имеющиеся окна, аннотации, рамки Crop и истории остаются независимыми. Отмена выбора файла и ошибка импорта не закрывают редакторы.
-
-Поддерживаются PNG, JPEG, TIFF, HEIF и другие растровые форматы, доступные системному декодеру macOS. PDF, SVG и RAW не поддерживаются. У анимированных и многостраничных изображений открывается только первый кадр или страница. Сохраняются нативное разрешение, прозрачность и Retina-размер из метаданных; поворот EXIF учитывается при открытии.
-
-Импортированному изображению доступны все инструменты аннотаций, Crop, Undo/Redo, копирование и экспорт PNG/JPEG. В заголовке окна показано имя файла или **Clipboard Image**. Открытие и редактирование не переписывают исходный файл и не изменяют содержимое буфера. **Save…** предлагает отдельное имя с суффиксом **edited**; фактическая запись выполняется только после подтверждения диалога.
-
-### Вернуться к скопированному
-
-Пока Stackboard запущен, он автоматически сохраняет поддерживаемое содержимое буфера обмена.
-
-- Откройте **Open Clipboard History** или нажмите `⌘⇧V`.
-- Найдите запись по тексту, имени/пути файла или дате. Поиск не распознаёт текст внутри изображений.
-- Выберите запись для предпросмотра; кнопка **Copy Again** вернёт её в буфер обмена. Затем вставьте её обычным `⌘V` в нужное приложение.
-- Используйте **Pin**, чтобы сохранить запись от автоматической очистки, или **Delete**, чтобы удалить её.
-- В меню очистки выберите срок хранения. По умолчанию — **30 дней**.
-
-**Clear** в окне истории и **Clear History** в меню удаляют всю историю, включая закреплённые записи. Отключение очистки по сроку не отменяет лимит по количеству записей: история не является бессрочным архивом.
-
-## Данные и конфиденциальность
-
-История хранится на вашем Mac, без облачной синхронизации.
-
-| Данные | Расположение |
-| --- | --- |
-| База истории SQLite | `~/Library/Application Support/Stackboard/clips.db` |
-| Изображения | `~/Library/Application Support/Stackboard/images/` |
-| Горячие клавиши, закрепление и срок хранения | Настройки macOS в домене `dev.0xfaced.Stackboard` |
-
-- История сохраняется между запусками приложения.
-- Для файлов хранится **путь, а не копия содержимого**. Если исходный файл переместить или удалить, повторное копирование по старому пути станет недоступным.
-- Текст сохраняется без исходного форматирования; при копировании нескольких файлов сохраняется ссылка только на первый.
-- Сейчас нет исключений для приложений, паузы записи и фильтрации приватных меток буфера обмена. **Пароли и другой чувствительный текст могут попасть в историю.** Учитывайте это при работе с секретами; локальное хранение само по себе не защищает их от доступа к вашему Mac.
-
-## Обновление и удаление
-
-Перед обновлением скопируйте нужные результаты из открытых редакторов и выберите **Quit Stackboard**.
-
-Для Homebrew:
-
-```sh
-brew update
-brew upgrade --cask 0x0faced/stackboard/stackboard
-open /Applications/Stackboard.app
-```
-
-При ручной установке скачайте новый релиз и замените приложение в `/Applications`. В обоих случаях требуется повторный запуск: замена `.app` не обновляет уже работающий процесс.
-
-Удаление через Homebrew:
-
-```sh
-brew uninstall --cask 0x0faced/stackboard/stackboard
-```
-
-При ручной установке перенесите `Stackboard.app` в Корзину. Обычное удаление приложения оставляет историю и настройки на месте; чтобы удалить записи истории, используйте **Clear History** перед выходом.
-
-### Homebrew не доверяет cask
-
-В Homebrew 7 сторонний cask может требовать явного доверия. Только если установка сообщает об `untrusted tap/cask`, разрешите этот cask и повторите установку:
-
-```sh
-brew trust --cask 0x0faced/stackboard/stackboard
-brew install --cask 0x0faced/stackboard/stackboard
-```
-
-Это доверие к Ruby-конфигурации Homebrew, а не обход Gatekeeper. В старых версиях Homebrew команды `trust` может не быть.
-
-## Сборка из исходников
-
-Нужны macOS, **полный Xcode 26.4** или совместимая более новая версия, **Python 3** и Git. Активный Xcode выбирается через `xcode-select` или `DEVELOPER_DIR`; одних Command Line Tools недостаточно.
-
-```sh
-git clone https://github.com/0x0FACED/stackboard.git
-cd stackboard
-bash scripts/package-release.sh 0.0.0
-open dist/0.0.0/Stackboard.app
-```
-
-`0.0.0` — пример версии для локальной сборки. Скрипт собирает Universal-приложение, подписывает его ad-hoc и проверяет готовый архив. Сертификаты и аккаунт Apple Developer не нужны; локальные настройки подписи Xcode-проекта не изменяются.
-
-В `dist/0.0.0/` появятся:
-
-| Файл | Назначение |
-| --- | --- |
-| `Stackboard.app` | Приложение для запуска |
-| `Stackboard.zip` | Архив для распространения |
-| `SHA256SUMS` | SHA-256 архива |
-| `release.json` | Версия, build number, минимальная macOS, архитектуры и SHA-256 для автоматизации |
-
-Для работы в IDE откройте `Stackboard.xcodeproj` и выберите схему **Stackboard**. В проекте настроена автоматическая подпись с командой автора: для сборки напрямую в Xcode выберите свою команду в **Signing & Capabilities** либо используйте скрипт выше для сборки без сертификатов.
-
-<details>
-<summary>Параметры сборки и проверка готового архива</summary>
-
-Допустимы стабильные версии `X.Y.Z` с необязательным префиксом `v`. Папка вывода должна отсутствовать или быть пустой: скрипт не перезаписывает готовые результаты. По умолчанию build number равен `1`.
-
-Можно задать положительный целый build number и другую папку вывода:
-
-```sh
-BUILD_NUMBER=17 bash scripts/package-release.sh v0.0.0 /tmp/stackboard-package
-```
-
-Повторная проверка без пересборки и изменения ZIP:
-
-```sh
-bash scripts/package-release.sh --verify-existing 0.0.0 dist/0.0.0
-```
-
-Проверяются checksum, пути и symlinks до распаковки, версия и идентификатор приложения, архитектуры всех упакованных Mach-O, подписи обеих архитектур и отсутствие отладочного `get-task-allow`.
-
-Для проверки нужны `Stackboard.zip` и `SHA256SUMS` одной версии. Если `.app` и `release.json` отсутствуют, скрипт создаст их из проверенного архива; существующие должны совпадать с ним. Чужие файлы и несовпадающие результаты не заменяются.
-
-</details>
-
-## Разработка и обратная связь
-
-Приложение написано на **Swift, SwiftUI и AppKit**. Хранение истории — **SQLite**, глобальные горячие клавиши — **Carbon**. Сторонних пакетов в Xcode-проекте нет.
-
-Основные части проекта:
-
-| Часть | Исходники |
-| --- | --- |
-| Меню, окна и действия приложения | [`AppController.swift`](Stackboard/AppController.swift), [`MenuBarMenuView.swift`](Stackboard/MenuBarMenuView.swift) |
-| Буфер обмена и хранение истории | [`ClipboardMonitor.swift`](Stackboard/ClipboardMonitor.swift), [`ClipboardService.swift`](Stackboard/ClipboardService.swift), [`ClipboardHistoryStore.swift`](Stackboard/ClipboardHistoryStore.swift) |
-| Захват и выбор области | [`ScreenshotCoordinator.swift`](Stackboard/ScreenshotCoordinator.swift), [`DesktopCapture.swift`](Stackboard/DesktopCapture.swift) |
-| Редактор и аннотации | [`EditorDocument.swift`](Stackboard/EditorDocument.swift), [`EditorAnnotationGeometry.swift`](Stackboard/EditorAnnotationGeometry.swift), [`ScreenshotEditorView.swift`](Stackboard/ScreenshotEditorView.swift) |
-| Рамка обрезки и её жесты | [`EditorCropOverlay.swift`](Stackboard/EditorCropOverlay.swift) |
-| Сохранение PNG/JPEG | [`ScreenshotEditorWindowController.swift`](Stackboard/ScreenshotEditorWindowController.swift), [`ScreenshotExport.swift`](Stackboard/ScreenshotExport.swift) |
-| Открытие изображений и команды | [`EditorImageImport.swift`](Stackboard/EditorImageImport.swift), [`ImageOpenCoordinator.swift`](Stackboard/ImageOpenCoordinator.swift) |
-| Горячие клавиши | [`GlobalHotKeyCenter.swift`](Stackboard/GlobalHotKeyCenter.swift), [`HotkeySettingsStore.swift`](Stackboard/HotkeySettingsStore.swift) |
-| Иконка и значок строки меню | [`StatusBarIcon.swift`](Stackboard/StatusBarIcon.swift), [`Assets.xcassets`](Stackboard/Assets.xcassets/), [`generate-icons.swift`](scripts/generate-icons.swift) |
-| Сборка и публикация | [`scripts/`](scripts/), [GitHub Actions](.github/workflows/) |
-
-Иконки используют общий мотив стопки карточек: цветная иконка приложения дополнена рамкой захвата, а значок строки меню упрощён для 18 точек. Значок меню — системный template с прозрачным фоном и вариантами 1×/2×; его цвет выбирает macOS. Для приложения заполнены все размеры AppIcon от 16 до 1024 пикселей.
-
-Исходная геометрия и палитра находятся в `scripts/generate-icons.swift`. Перегенерация PNG на macOS без сторонних зависимостей:
-
-```sh
-xcrun swift scripts/generate-icons.swift
-```
-
-Проверки разработки:
-
-```sh
-bash -n scripts/package-release.sh
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v
-go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck shellcheck
-```
-
-Для последней команды нужны Go и ShellCheck в `PATH`. Python-тесты проверяют инструменты релиза, а на macOS с Xcode — также стирание, прозрачность, Undo/Redo, ветвление и независимость историй, выделение, перемещение, размеры, оформление, удаление и дублирование объектов, повторное редактирование текста, кириллицу и переносы в реальной модели редактора на синтетических изображениях. Проверяется восстановление идентификаторов, порядка аннотаций и пикселей экспорта. На других платформах редакторные проверки пропускаются. Тесты не выполняют сетевых запросов, не меняют Homebrew tap и не читают системный буфер или пользовательскую историю; они не заменяют проверку интерфейса приложения. Проверка полного пакета — запуск `package-release.sh` и затем `--verify-existing` на macOS.
-
-Проверка файлов PNG/JPEG также декодирует сохранённые изображения: контролирует Retina-разрешение, пиксели аннотаций и прозрачность PNG, белый фон прозрачных участков JPEG, влияние качества на точность изображения и сохранность документа при ошибке записи.
-
-Проверки обрезки сравнивают пиксели с соответствующей областью исходного изображения, включая Retina, частично обрезанные фигуры, стрелки и текст, маски ластика и Blur на новой границе. Проверяются повторные обрезки, чередование с правками объектов, Undo/Redo, отмена рамки, сохранение ветки Redo и граничные размеры вплоть до одного пикселя.
-
-Нативный растр Crop и композита дополнительно проверяется в явно заданных bitmap-контекстах 1× и 2×, включая нечётные размеры Retina и восстановление через Undo. Изображения после обрезки хранят явный `NSBitmapImageRep`: размер в пикселях не должен зависеть от масштаба экрана или headless-окружения CI.
-
-Проверки импорта используют временные файлы и отдельные именованные буферы: контролируют исходное разрешение и прозрачность PNG, поворот JPEG по EXIF, Retina TIFF, выбор явно записанного PNG вместо уменьшенных или синтезированных представлений, ошибки ввода и независимость документов. Исходные файлы и содержимое буфера проверяются на неизменность после открытия, редактирования и экспорта.
-
-Ошибки и предложения — в [GitHub Issues](https://github.com/0x0FACED/stackboard/issues). Для ошибки укажите версию Stackboard и macOS, архитектуру Mac, способ установки, шаги воспроизведения, ожидаемый и фактический результат. Не прикладывайте секреты из буфера обмена или скриншотов.
-
-Планы развития редактора и истории — в [TODO.md](TODO.md). Пункты плана не являются уже доступными возможностями.
-
-## Выпуск релизов
-
-<details>
-<summary>Инструкции для сопровождающего проекта</summary>
-
-### Как устроена публикация
-
-[`ci.yml`](.github/workflows/ci.yml) запускается на push в `main`, pull request и вручную: проверяет workflow, shell-синтаксис и поведение release-инструментов, собирает Universal-пакет и повторно проверяет готовый ZIP.
-
-[`release.yml`](.github/workflows/release.yml) запускается по стабильному тегу `vX.Y.Z` или вручную с существующим тегом. Workflow публикует GitHub Release и обновляет [`0x0FACED/homebrew-stackboard`](https://github.com/0x0FACED/homebrew-stackboard).
-
-Jobs работают только в **публичных** репозиториях на стандартных runners. Платные larger runners, Actions artifacts и Actions cache не используются. Платные подписи и notarization также не используются; приватизация репозитория отключит jobs, а не переведёт их на платную сборку.
-
-macOS jobs используют `macos-26` и **Xcode 26.4.1**. Если эта версия исчезнет из образа GitHub runner, нужно обновить `DEVELOPER_DIR` в обоих workflow и проверить новую сборку: автоматического перехода на другой компилятор нет.
-
-### Однократная настройка токена
-
-В настройках аккаунта GitHub откройте **Settings → Developer settings → Personal access tokens → Fine-grained tokens** и создайте токен:
-
-- **Resource owner:** `0x0FACED`.
-- **Repository access:** только `homebrew-stackboard`.
-- **Repository permissions:** `Contents — Read and write`.
-- Выберите срок действия и заменяйте токен до его истечения.
-
-В репозитории `0x0FACED/stackboard` сохраните его как **`HOMEBREW_TAP_TOKEN`** в **Settings → Secrets and variables → Actions → New repository secret**. Не помещайте токен в исходники, логи или сообщения.
-
-Встроенный `GITHUB_TOKEN` публикует Release в основном репозитории; отдельный токен нужен для tap. Workflow делает прямой push в `main` tap, поэтому защита ветки должна допускать запись выбранной учётной записью. Права администратора и доступ ко всем репозиториям не нужны.
-
-### Новая версия
-
-Сначала закоммитьте изменения. Тег должен указывать на коммит с нужными исходниками и release-инструментами: незакоммиченные файлы в релиз не попадут.
-
-Например, для новой, ещё не занятой версии `1.0.2`:
-
-```sh
-git push origin main
-git tag v1.0.2
-git push origin v1.0.2
-```
-
-Workflow:
-
-1. Проверяет тег и секрет, получает исходники тега и собирает проверенный ZIP. Версия берётся из тега, build number — из номера запуска Actions.
-2. Проверяет допустимость обновления `Casks/stackboard.rb`, создаёт/обновляет draft, загружает архив и checksum, публикует Release.
-3. Обновляет в tap `version`, `sha256` и зависимость от основной версии macOS из фактического `Info.plist`.
-
-В Release публикуются **`Stackboard.zip`** и **`SHA256SUMS`**. `release.json` остаётся служебным файлом автоматизации.
-
-Homebrew задаёт минимальную macOS с точностью до основной версии (`13.5` → `:ventura`); точный минимум **13.5** остаётся в `Info.plist` и проверяется macOS при запуске.
-
-### Повторный запуск и ошибки
-
-- Неопубликованный draft можно пересобрать: его assets заменяются при повторном запуске.
-- Опубликованный Release не пересобирается и не переподписывается: workflow скачивает и проверяет существующие ZIP/checksum, не изменяя их.
-- Если Release опубликован, но push в tap не прошёл, исправьте токен или конфликт и используйте **Actions → Release → Re-run failed jobs** либо **Run workflow** с тем же тегом.
-- Понижение версии tap и замена SHA-256 уже известной ему версии запрещены. Изменённое приложение требует **новой версии**, а не переноса старого тега.
-- Все release-запуски сериализованы. Не меняйте tap вручную параллельно публикации; ошибка push не изменяет опубликованный ZIP.
-- Старый ручной `v1.0.0` не содержит обязательного `SHA256SUMS` и новой инфраструктуры в tagged source; его нельзя повторно публиковать этим процессом.
-
-</details>
+Looking for the source? [Build and development guide](docs/development.md) · [Maintainer release guide](docs/releases.md)
