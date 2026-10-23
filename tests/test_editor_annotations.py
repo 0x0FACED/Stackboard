@@ -108,6 +108,9 @@ class EditorAnnotationTests(unittest.TestCase):
     def test_crop_rejects_invalid_bounds_and_keeps_tiny_fractional_regions(self):
         self.run_scenario("crop-draft-bounds")
 
+    def test_crop_pixels_survive_1x_and_2x_graphics_contexts(self):
+        self.run_scenario("crop-native-contexts")
+
 
 if __name__ == "__main__":
     unittest.main()

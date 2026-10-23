@@ -1865,6 +1865,70 @@ private func cropDraftBounds() throws {
     }
 }
 
+@MainActor
+private func cropNativeGraphicsContexts() throws {
+    let document = EditorDocument(baseImage: makeImage())
+    let originalBase = try pixels(document)
+
+    func checkImage(
+        _ image: NSImage, source: NSBitmapImageRep, region: CGRect,
+        in context: NSGraphicsContext, label: String
+    ) throws {
+        guard let cgImage = image.cgImage(forProposedRect: nil, context: context, hints: nil) else {
+            throw Failure.check("\(label): could not obtain raster pixels")
+        }
+        try expectPixelRegion(
+            NSBitmapImageRep(cgImage: cgImage), from: source, rect: region, label
+        )
+    }
+
+    let contexts = [CGFloat(1), CGFloat(2)].map { scale -> (NSBitmapImageRep, NSGraphicsContext) in
+        let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(64 * scale), pixelsHigh: Int(64 * scale),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+        )!
+        bitmap.size = CGSize(width: 64, height: 64)
+        return (bitmap, NSGraphicsContext(bitmapImageRep: bitmap)!)
+    }
+    let full = CGRect(x: 0, y: 0, width: 640, height: 400)
+    for (index, (_, context)) in contexts.enumerated() {
+        try checkImage(
+            document.baseImage, source: originalBase, region: full,
+            in: context, label: "Initial Retina image in \(index + 1)x context"
+        )
+    }
+
+    rectangle(document)
+    let originalComposite = try pixels(document)
+    let crop = CGRect(x: 73, y: 41, width: 491, height: 307)
+    document.beginCrop()
+    document.updateCropRect(crop)
+    try expect(document.applyCrop(), "Could not apply the odd-pixel Retina crop")
+    guard let composite = document.renderCompositeImage() else {
+        throw Failure.check("Could not render the odd-pixel crop")
+    }
+    for (index, (_, context)) in contexts.enumerated() {
+        try checkImage(
+            document.baseImage, source: originalBase, region: crop,
+            in: context, label: "Cropped base in \(index + 1)x context"
+        )
+        try checkImage(
+            composite, source: originalComposite, region: crop,
+            in: context, label: "Cropped composite in \(index + 1)x context"
+        )
+    }
+    document.undo()
+    for (index, (_, context)) in contexts.enumerated() {
+        try checkImage(
+            document.baseImage, source: originalBase, region: full,
+            in: context, label: "Restored base in \(index + 1)x context"
+        )
+    }
+    document.redo()
+    try expectRetinaSize(document, crop.size)
+}
+
 @main
 private struct EditorAnnotationTests {
     @MainActor
@@ -1894,6 +1958,7 @@ private struct EditorAnnotationTests {
             case "crop-interleaved-history": try cropInterleavedHistory()
             case "crop-draft-boundaries": try cropDraftBoundaries()
             case "crop-draft-bounds": try cropDraftBounds()
+            case "crop-native-contexts": try cropNativeGraphicsContexts()
             default: throw Failure.check("Unknown test scenario")
             }
         } catch {

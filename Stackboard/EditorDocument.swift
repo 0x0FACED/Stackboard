@@ -455,9 +455,9 @@ final class EditorDocument: ObservableObject {
         }
 
         let before = cropState
-        let image = NSImage(
-            cgImage: cropped,
-            size: CGSize(
+        let image = Self.bitmapImage(
+            cropped,
+            pointSize: CGSize(
                 width: rect.width * baseImage.size.width / pixelSize.width,
                 height: rect.height * baseImage.size.height / pixelSize.height
             )
@@ -966,7 +966,7 @@ final class EditorDocument: ObservableObject {
             guard let cropped = bitmap.cgImage?.cropping(to: CGRect(
                 x: padding, y: padding, width: Int(pixelSize.width), height: Int(pixelSize.height)
             )) else { return nil }
-            return NSImage(cgImage: cropped, size: baseImage.size)
+            return Self.bitmapImage(cropped, pointSize: baseImage.size)
         }
 
 
@@ -1600,5 +1600,15 @@ final class EditorDocument: ObservableObject {
             width: rect.width,
             height: rect.height
         )
+    }
+
+    private static func bitmapImage(_ cgImage: CGImage, pointSize: CGSize) -> NSImage {
+        // NSImage(cgImage:size:) may resnapshot a cropped CGImage at the display's scale.
+        // A concrete bitmap keeps its native pixels separate from its logical point size.
+        let bitmap = NSBitmapImageRep(cgImage: cgImage)
+        bitmap.size = pointSize
+        let image = NSImage(size: pointSize)
+        image.addRepresentation(bitmap)
+        return image
     }
 }
