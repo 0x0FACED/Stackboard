@@ -11,6 +11,14 @@ struct MenuBarMenuView: View {
                 appController.startScreenshot()
             }
 
+            Button("Open Image…    ⌘O") {
+                appController.openImageFile()
+            }
+
+            Button("Open Image from Clipboard") {
+                appController.openImageFromClipboard()
+            }
+
             Button("Open Clipboard History    \(hotkeySettingsStore.historyShortcut.displayString)") {
                 appController.openHistoryWindow()
             }

@@ -21,6 +21,12 @@ struct StackboardApp: App {
         Settings {
             EmptyView()
         }
+        .commands {
+            ImageOpenCommands(
+                openFile: { appController.openImageFile() },
+                openClipboard: { appController.openImageFromClipboard() }
+            )
+        }
     }
 }
     

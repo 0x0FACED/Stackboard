@@ -5,24 +5,27 @@ import SwiftUI
 final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelegate {
     private let appController: AppController
     private let editorDocument: EditorDocument
+    private let suggestedFilename: String?
 
-    /// Fits the native-point-size canvas to its captured screen, retaining an attainable fixed minimum.
-    init(appController: AppController, capture: ScreenshotCapture) {
+    /// Captures stay anchored to their screen region; imported images open centered.
+    init(appController: AppController, image: NSImage, captureRect: CGRect? = nil, sourceName: String? = nil) {
         self.appController = appController
-        let image = capture.image
+        suggestedFilename = sourceName.map { "\(($0 as NSString).deletingPathExtension) edited" }
         editorDocument = EditorDocument(baseImage: image)
 
-        let visibleFrame = Self.visibleFrame(for: capture.selectionRect)
+        let visibleFrame = captureRect.map(Self.visibleFrame(for:)) ??
+            (NSApp.keyWindow?.screen ?? NSScreen.main)?.visibleFrame ??
+            CGRect(x: 0, y: 0, width: 1440, height: 900)
         let window = EscapeAwareWindow(
             contentRect: CGRect(
-                origin: capture.selectionRect.origin,
+                origin: captureRect?.origin ?? visibleFrame.origin,
                 size: ScreenshotEditorView.minimumContentSize
             ),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        window.title = "Stackboard Editor"
+        window.title = sourceName.map { "\($0) — Stackboard Editor" } ?? "Stackboard Editor"
         window.collectionBehavior = [.managed, .moveToActiveSpace, .fullScreenAuxiliary]
         window.hidesOnDeactivate = false
         window.isReleasedWhenClosed = false
@@ -62,7 +65,9 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
         // Hosting attachment and initial layout can replace the window's requested size.
         hostingController.view.layoutSubtreeIfNeeded()
         let contentRect = Self.initialContentRect(
-            for: capture,
+            imageSize: image.size,
+            captureRect: captureRect,
+            visibleFrame: visibleFrame,
             maximumContentSize: maximumContentSize,
             minimumContentSize: minimumContentSize
         )
@@ -101,9 +106,13 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         panel.allowedContentTypes = [ScreenshotExportFormat.png.contentType]
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
-        panel.nameFieldStringValue = "Screenshot \(dateFormatter.string(from: Date()))"
+        if let suggestedFilename {
+            panel.nameFieldStringValue = suggestedFilename
+        } else {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+            panel.nameFieldStringValue = "Screenshot \(dateFormatter.string(from: Date()))"
+        }
         let options = ScreenshotSaveOptionsView(panel: panel)
         panel.accessoryView = options
 
@@ -137,11 +146,13 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
     }
 
     private static func initialContentRect(
-        for capture: ScreenshotCapture,
+        imageSize: CGSize,
+        captureRect: CGRect?,
+        visibleFrame: CGRect,
         maximumContentSize: CGSize,
         minimumContentSize: CGSize
     ) -> CGRect {
-        let naturalCanvasSize = capture.image.size
+        let naturalCanvasSize = imageSize
         let maximumCanvasSize = CGSize(
             width: max(maximumContentSize.width - ScreenshotEditorView.sidebarWidth, 0),
             height: maximumContentSize.height
@@ -166,10 +177,11 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
         )
         let canvasWidth = max(contentSize.width - ScreenshotEditorView.sidebarWidth, 0)
 
-        // Center the image over its captured location, including minimum-size letterboxing.
+        // Captures retain their canvas position; imports center the complete editor window.
         return CGRect(
-            x: capture.selectionRect.midX - canvasWidth * 0.5 - ScreenshotEditorView.sidebarWidth,
-            y: capture.selectionRect.midY - contentSize.height * 0.5,
+            x: captureRect.map { $0.midX - canvasWidth * 0.5 - ScreenshotEditorView.sidebarWidth } ??
+                (visibleFrame.midX - contentSize.width * 0.5),
+            y: (captureRect?.midY ?? visibleFrame.midY) - contentSize.height * 0.5,
             width: contentSize.width,
             height: contentSize.height
         )

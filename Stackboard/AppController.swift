@@ -13,6 +13,7 @@ final class AppController: ObservableObject {
     private let clipboardMonitor: ClipboardMonitor
     private let hotKeys: GlobalHotKeyCenter
     private var screenshotCoordinator: ScreenshotCoordinator?
+    private let imageOpenCoordinator = ImageOpenCoordinator()
     private var historyWindowController: HistoryWindowController?
     private var historyImagePreviewWindowController: HistoryImagePreviewWindowController?
     private var editorWindowControllers: [ScreenshotEditorWindowController] = []
@@ -30,7 +31,19 @@ final class AppController: ObservableObject {
 
     func startScreenshot() {
         screenshotCoordinator?.beginSelection { [weak self] capture in
-            self?.presentEditor(for: capture)
+            self?.presentEditor(image: capture.image, captureRect: capture.selectionRect)
+        }
+    }
+
+    func openImageFile() {
+        imageOpenCoordinator.openFile { [weak self] image, sourceName in
+            self?.presentEditor(image: image, sourceName: sourceName)
+        }
+    }
+
+    func openImageFromClipboard() {
+        imageOpenCoordinator.openClipboard { [weak self] image, sourceName in
+            self?.presentEditor(image: image, sourceName: sourceName)
         }
     }
 
@@ -56,9 +69,11 @@ final class AppController: ObservableObject {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// Keeps every editor independent so an existing editor can itself be captured.
-    func presentEditor(for capture: ScreenshotCapture) {
-        let controller = ScreenshotEditorWindowController(appController: self, capture: capture)
+    /// Every screenshot or imported image gets its own document and history.
+    private func presentEditor(image: NSImage, captureRect: CGRect? = nil, sourceName: String? = nil) {
+        let controller = ScreenshotEditorWindowController(
+            appController: self, image: image, captureRect: captureRect, sourceName: sourceName
+        )
         editorWindowControllers.append(controller)
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
