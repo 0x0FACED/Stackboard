@@ -93,6 +93,21 @@ class EditorAnnotationTests(unittest.TestCase):
     def test_png_and_jpeg_preserve_retina_composites_alpha_and_quality(self):
         self.run_scenario("file-export")
 
+    def test_crop_preserves_native_retina_pixels_and_point_scale(self):
+        self.run_scenario("crop-retina-pixels")
+
+    def test_crop_preserves_partial_annotations_wrapping_blur_and_mask_order(self):
+        self.run_scenario("crop-annotations-masks")
+
+    def test_repeated_crops_and_subsequent_edits_share_reversible_history(self):
+        self.run_scenario("crop-interleaved-history")
+
+    def test_crop_drafts_finish_sessions_cancel_gestures_and_preserve_redo(self):
+        self.run_scenario("crop-draft-boundaries")
+
+    def test_crop_rejects_invalid_bounds_and_keeps_tiny_fractional_regions(self):
+        self.run_scenario("crop-draft-bounds")
+
 
 if __name__ == "__main__":
     unittest.main()

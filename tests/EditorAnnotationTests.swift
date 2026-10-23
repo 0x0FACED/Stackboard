@@ -763,6 +763,10 @@ private func expectTranslated(_ actual: EditorAnnotation, from original: EditorA
         var expected = before
         expected.points = before.points.map(shifted)
         try expect(after == expected, "Moving a stroke distorted points, width, or color")
+    case let (.eraser(before), .eraser(after)):
+        var expected = before
+        expected.points = before.points.map(shifted)
+        try expect(after == expected, "Translating an eraser distorted its path or brush width")
     case let (.arrow(before), .arrow(after)):
         var expected = before
         expected.start = shifted(before.start)
@@ -1442,6 +1446,425 @@ private func fileExport() throws {
     try expectSamePixels(savedPNG, png, "Failed export damaged the previously saved file")
 }
 
+@MainActor
+private func decodedPixels(_ image: NSImage) throws -> NSBitmapImageRep {
+    guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        throw Failure.check("Could not decode the image's native pixels")
+    }
+    return NSBitmapImageRep(cgImage: cgImage)
+}
+
+@MainActor
+private func expectPixelRegion(
+    _ actual: NSBitmapImageRep, from original: NSBitmapImageRep, rect: CGRect, _ message: String
+) throws {
+    try expect(
+        actual.pixelsWide == Int(rect.width) && actual.pixelsHigh == Int(rect.height),
+        "\(message): wrong pixel dimensions"
+    )
+    try expect(
+        rect.minX >= 0 && rect.minY >= 0
+            && rect.maxX <= CGFloat(original.pixelsWide) && rect.maxY <= CGFloat(original.pixelsHigh),
+        "\(message): comparison region escaped the original image"
+    )
+    // Native CGImage crops and composite/PNG decodes need not share a bitmap layout or ICC profile.
+    for y in 0..<actual.pixelsHigh {
+        for x in 0..<actual.pixelsWide {
+            let actualPoint = CGPoint(x: x, y: y)
+            let originalPoint = CGPoint(x: x + Int(rect.minX), y: y + Int(rect.minY))
+            try expect(
+                distance(color(actual, actualPoint), color(original, originalPoint)) < 0.015,
+                "\(message): normalized color differs at \(actualPoint)"
+            )
+        }
+    }
+}
+
+@MainActor
+private func expectRetinaSize(_ document: EditorDocument, _ size: CGSize) throws {
+    try expect(document.pixelSize == size, "Crop reported the wrong image-pixel size")
+    try expect(
+        document.baseImage.size == CGSize(width: size.width / 2, height: size.height / 2),
+        "Crop changed the source's two-pixels-per-point scale"
+    )
+    let native = try decodedPixels(document.baseImage)
+    try expect(
+        native.pixelsWide == Int(size.width) && native.pixelsHigh == Int(size.height),
+        "Crop resized image metadata without cropping its native pixels"
+    )
+}
+
+@MainActor
+private func cropRetinaPixels() throws {
+    let document = EditorDocument(baseImage: makeImage())
+    let originalBase = try decodedPixels(document.baseImage)
+    let originalExport = try pixels(document)
+    let rect = CGRect(x: 73, y: 41, width: 491, height: 307)
+    document.beginCrop()
+    try expect(
+        document.cropRect == CGRect(x: 0, y: 0, width: 640, height: 400),
+        "Crop did not start with the complete current image"
+    )
+    document.updateCropRect(rect)
+    try expect(document.cropRect == rect, "Crop draft did not use top-left native image pixels")
+    try expectRetinaSize(document, CGSize(width: 640, height: 400))
+    try expectPixelRegion(
+        pixels(document), from: originalExport, rect: CGRect(x: 0, y: 0, width: 640, height: 400),
+        "An unapplied draft changed export"
+    )
+    try expect(document.applyCrop(), "A nonzero-origin crop was not applied")
+    try expect(document.cropRect == nil && document.undoActionName == "Crop", "Applying crop left a draft or the wrong history action")
+    try expectRetinaSize(document, rect.size)
+    try expectPixelRegion(decodedPixels(document.baseImage), from: originalBase, rect: rect, "Retina base crop")
+    try expectPixelRegion(pixels(document), from: originalExport, rect: rect, "Retina exported crop")
+}
+
+@MainActor
+private func cropAnnotationsAndMasks() throws {
+    let rect = CGRect(x: 137, y: 87, width: 217, height: 173)
+    let translation = CGSize(width: -rect.minX, height: -rect.minY)
+    for kind in visualKinds {
+        let document = EditorDocument(baseImage: makeImage())
+        if kind == "text" {
+            try addText(
+                document, "Wrapped text remains unchanged after cropping. Привет мир! Another sentence wraps too.",
+                at: CGPoint(x: 100, y: 100), size: 24
+            )
+            try setTextWidth(document, to: 220)
+            try expect(
+                inkLineRects(EditorTextLayout(annotation: textAnnotation(document))).count >= 3,
+                "Crop text fixture did not contain wrapped lines"
+            )
+        } else {
+            try createVisual(document, kind: kind)
+        }
+        let original = document.annotations[0]
+        _ = document.handleEscape()
+        document.activateTool(.rectangle)
+        document.setShapeStyle(.filled)
+        document.applySelectedColor(.blue)
+        document.beginInteraction(at: CGPoint(x: 530, y: 310))
+        document.endInteraction(at: CGPoint(x: 620, y: 380))
+        erase(document, from: CGPoint(x: 540, y: 340), to: CGPoint(x: 610, y: 340), width: 18)
+        erase(document, from: CGPoint(x: 110, y: 175), to: CGPoint(x: 330, y: 175), width: 18)
+        let retainedMask = document.annotations.last!
+        document.activateTool(.rectangle)
+        document.setShapeStyle(.filled)
+        document.applySelectedColor(.green)
+        document.beginInteraction(at: CGPoint(x: 205, y: 168))
+        document.endInteraction(at: CGPoint(x: 225, y: 182))
+        let laterDrawing = document.annotations.last!
+        let before = document.annotations
+        let beforePixels = try pixels(document)
+        let beforeBase = try decodedPixels(document.baseImage)
+
+        document.beginCrop()
+        document.updateCropRect(rect)
+        try expect(document.applyCrop(), "Could not crop partially clipped \(kind)")
+        try expect(
+            document.annotations.map(\.id) == [original.id, retainedMask.id, laterDrawing.id],
+            "Crop flattened/reordered \(kind) or retained wholly outside objects/masks"
+        )
+        for (actual, expected) in zip(document.annotations, [original, retainedMask, laterDrawing]) {
+            try expectTranslated(actual, from: expected, by: translation)
+        }
+        try expectPixelRegion(pixels(document), from: beforePixels, rect: rect, "Crop changed clipped \(kind), erasure, or later ink")
+        try expectPixelRegion(decodedPixels(document.baseImage), from: beforeBase, rect: rect, "Crop flattened \(kind) into the base")
+        if kind == "text" {
+            let croppedText = try textAnnotation(document, id: original.id)
+            guard case let .text(originalText) = original else { throw Failure.check("Missing wrapped text fixture") }
+            try expect(
+                inkLineRects(EditorTextLayout(annotation: croppedText))
+                    == inkLineRects(EditorTextLayout(annotation: originalText)),
+                "Crop reflowed partially clipped text instead of retaining its wrap width"
+            )
+        }
+        document.undo()
+        try expect(document.annotations == before, "One crop undo did not restore \(kind) IDs, geometry, and mask order")
+        try expectRetinaSize(document, CGSize(width: 640, height: 400))
+        try expectPixelRegion(
+            pixels(document), from: beforePixels, rect: CGRect(x: 0, y: 0, width: 640, height: 400),
+            "Crop undo changed \(kind) pixels"
+        )
+        document.redo()
+        try expect(
+            document.annotations.map(\.id) == [original.id, retainedMask.id, laterDrawing.id],
+            "Crop redo changed retained IDs/order"
+        )
+        try expectPixelRegion(pixels(document), from: beforePixels, rect: rect, "Crop redo changed clipped \(kind)")
+    }
+}
+
+@MainActor
+private func cropInterleavedHistory() throws {
+    let document = EditorDocument(baseImage: makeImage())
+    let reference = EditorDocument(baseImage: makeImage())
+    for fixture in [document, reference] {
+        try createVisual(fixture, kind: "rectangle-filled")
+        try createVisual(fixture, kind: "blur")
+        erase(fixture, from: CGPoint(x: 110, y: 165), to: CGPoint(x: 330, y: 165), width: 18)
+    }
+    let original = document.annotations
+    let originalPixels = try pixels(document)
+    let originalBase = try decodedPixels(document.baseImage)
+    let full = CGRect(x: 0, y: 0, width: 640, height: 400)
+    let firstRect = CGRect(x: 117, y: 83, width: 333, height: 211)
+    document.beginCrop()
+    document.updateCropRect(firstRect)
+    try expect(document.applyCrop(), "First history crop failed")
+    let first = document.annotations
+    let firstPixels = try pixels(document)
+    try expect(document.undoActionName == "Crop", "Crop was not exposed as one named undo operation")
+    document.undo()
+    try expect(document.annotations == original && document.redoActionName == "Crop", "One undo did not restore all pre-crop objects")
+    try expectRetinaSize(document, full.size)
+    try expectPixelRegion(decodedPixels(document.baseImage), from: originalBase, rect: full, "Crop undo changed original source pixels")
+    try expectPixelRegion(pixels(document), from: originalPixels, rect: full, "Crop undo changed the original composite")
+    document.redo()
+    try expect(document.annotations == first, "Crop redo changed translated IDs/order")
+    try expectPixelRegion(pixels(document), from: firstPixels, rect: CGRect(origin: .zero, size: firstRect.size), "Crop redo changed blur-edge pixels")
+
+    for (fixture, grab) in [
+        (document, CGPoint(x: 113, y: 47)), (reference, CGPoint(x: 230, y: 130)),
+    ] {
+        selectObject(fixture, at: grab)
+        try expect(fixture.selectedAnnotation?.kind == .blur, "Could not select the retained partial blur")
+        fixture.setBlurControlValue(22)
+    }
+    let styled = document.annotations
+    let styledPixels = try pixels(document)
+    try expect(try changedPixels(styledPixels, from: firstPixels).isEmpty == false, "Post-crop blur styling did not affect visible pixels")
+    try expectPixelRegion(
+        styledPixels, from: pixels(reference), rect: firstRect,
+        "Editing blur after crop sampled the new edge instead of the original source"
+    )
+    document.undo()
+    try expect(document.annotations == first, "Undo of a post-crop edit consumed the crop or changed other objects")
+    try expectPixelRegion(pixels(document), from: firstPixels, rect: CGRect(origin: .zero, size: firstRect.size), "Blur edit undo changed crop pixels")
+    document.redo()
+    try expect(document.annotations == styled, "Redo of post-crop styling changed IDs/order")
+    for (fixture, grab) in [
+        (document, CGPoint(x: 113, y: 47)), (reference, CGPoint(x: 230, y: 130)),
+    ] {
+        drag(fixture, from: grab, to: CGPoint(x: grab.x + 9, y: grab.y + 13))
+    }
+    let moved = document.annotations
+    let movedPixels = try pixels(document)
+    try expectTranslated(moved[1], from: styled[1], by: CGSize(width: 9, height: 13))
+    try expectPixelRegion(movedPixels, from: pixels(reference), rect: firstRect, "Moving a cropped blur lost its original source coordinates")
+
+    let secondRect = CGRect(x: 21, y: 17, width: 191, height: 127)
+    document.beginCrop()
+    document.updateCropRect(secondRect)
+    try expect(document.applyCrop(), "Repeated crop failed")
+    let second = document.annotations
+    try expectRetinaSize(document, secondRect.size)
+    try expectPixelRegion(pixels(document), from: movedPixels, rect: secondRect, "Repeated crop changed partial blur/eraser pixels")
+    try expectPixelRegion(
+        pixels(document), from: pixels(reference),
+        rect: CGRect(x: firstRect.minX + secondRect.minX, y: firstRect.minY + secondRect.minY, width: 191, height: 127),
+        "Repeated crop did not accumulate original blur-source coordinates"
+    )
+    for (expected, expectedPixels, size) in [
+        (moved, movedPixels, firstRect.size),
+        (styled, styledPixels, firstRect.size),
+        (first, firstPixels, firstRect.size),
+        (original, originalPixels, full.size),
+    ] {
+        document.undo()
+        try expect(document.annotations == expected, "Interleaved crop/edit undo changed IDs, geometry, or order")
+        try expectRetinaSize(document, size)
+        try expectPixelRegion(pixels(document), from: expectedPixels, rect: CGRect(origin: .zero, size: size), "Interleaved crop/edit undo changed pixels")
+    }
+    document.undo()
+    try expect(document.annotations == Array(original.dropLast()), "History before the crop stopped being a per-annotation erase operation")
+    try expectRetinaSize(document, full.size)
+    for (expected, expectedPixels, size) in [
+        (original, originalPixels, full.size),
+        (first, firstPixels, firstRect.size),
+        (styled, styledPixels, firstRect.size),
+        (moved, movedPixels, firstRect.size),
+    ] {
+        document.redo()
+        try expect(document.annotations == expected, "Interleaved crop/edit redo changed IDs, geometry, or order")
+        try expectRetinaSize(document, size)
+        try expectPixelRegion(pixels(document), from: expectedPixels, rect: CGRect(origin: .zero, size: size), "Interleaved crop/edit redo changed pixels")
+    }
+    document.redo()
+    try expect(document.annotations == second && document.canRedo == false, "Repeated crop redo lost state or added extra history")
+    try expectRetinaSize(document, secondRect.size)
+    try expectPixelRegion(pixels(document), from: movedPixels, rect: secondRect, "Repeated crop redo changed blur-source offset")
+}
+
+@MainActor
+private func cropDraftBoundaries() throws {
+    let document = EditorDocument(baseImage: makeImage())
+    let original = try createVisual(document, kind: "rectangle-filled")
+    selectObject(document, at: objectGrab("rectangle-filled"))
+    document.applySelectedColor(.blue)
+    let styled = document.annotations
+    document.undo()
+    let redoName = document.redoActionName
+    let originalPixels = try pixels(document)
+    let draft = CGRect(x: 137, y: 87, width: 217, height: 173)
+    func expectUnchanged(_ message: String) throws {
+        try expect(
+            document.cropRect == nil && document.annotations == [original]
+                && document.canRedo && document.redoActionName == redoName,
+            "\(message): changed committed objects or consumed Redo"
+        )
+        try expectRetinaSize(document, CGSize(width: 640, height: 400))
+    }
+    document.beginCrop()
+    document.updateCropRect(draft)
+    document.cancelCrop()
+    try expectUnchanged("Cancel crop")
+    document.beginCrop()
+    try expect(document.applyCrop() == false, "Full-image crop was treated as an applied edit")
+    try expectUnchanged("Full-image no-op")
+    document.beginCrop()
+    document.updateCropRect(draft)
+    try expect(document.handleEscape(), "Escape did not consume/cancel the crop draft")
+    try expectUnchanged("Escape crop")
+    document.beginCrop()
+    document.updateCropRect(draft)
+    document.undo()
+    try expectUnchanged("Undo active crop")
+    document.beginCrop()
+    document.updateCropRect(draft)
+    document.redo()
+    try expectUnchanged("Redo active crop")
+    document.beginCrop()
+    document.updateCropRect(draft)
+    document.activateTool(document.selectedTool)
+    try expectUnchanged("Reactivating a tool")
+    document.beginCrop()
+    document.updateCropRect(draft)
+    document.activateTool(.pen)
+    try expectUnchanged("Switching tools")
+    try expect(document.applyCrop() == false, "Apply without a draft changed the document")
+    try expectPixelRegion(
+        pixels(document), from: originalPixels, rect: CGRect(x: 0, y: 0, width: 640, height: 400),
+        "Cancelled/no-op crops changed pixels"
+    )
+    document.redo()
+    try expect(document.annotations == styled, "Redo after crop cancellation did not restore its original edit")
+
+    let pending = EditorDocument(baseImage: makeImage())
+    pending.activateTool(.text)
+    pending.beginInteraction(at: CGPoint(x: 80, y: 60))
+    pending.setPendingText("Commit before crop")
+    pending.beginCrop()
+    try expect(pending.pendingTextInsertion == nil && pending.annotations.count == 1, "Beginning crop lost or left pending text")
+    pending.cancelCrop()
+    pending.undo()
+    try expect(pending.annotations.isEmpty && pending.canRedo, "Crop failed to finish pending text as its own history entry")
+
+    let styling = EditorDocument(baseImage: makeImage())
+    let stroke = try createVisual(styling, kind: "stroke")
+    selectObject(styling, at: objectGrab("stroke"))
+    styling.beginStyleEditing()
+    styling.setLineWidthControlValue(20)
+    styling.setLineWidthControlValue(26)
+    let restyled = styling.annotations
+    styling.beginCrop()
+    styling.cancelCrop()
+    styling.undo()
+    try expect(styling.annotations == [stroke], "Beginning crop did not finish the grouped style edit")
+    styling.redo()
+    try expect(styling.annotations == restyled, "Style redo after cancelling crop lost the finished edit")
+
+    for tool in [EditorTool.pen, .eraser, .move] {
+        let gesture = EditorDocument(baseImage: makeImage())
+        try createVisual(gesture, kind: "rectangle-filled")
+        let committed = gesture.annotations
+        let committedPixels = try pixels(gesture)
+        if tool == .move {
+            selectObject(gesture, at: objectGrab("rectangle-filled"))
+        } else {
+            gesture.activateTool(tool)
+        }
+        gesture.beginInteraction(at: CGPoint(x: 200, y: 160))
+        gesture.updateInteraction(at: CGPoint(x: 260, y: 190))
+        gesture.beginCrop()
+        try expect(gesture.annotations == committed, "Beginning crop committed unfinished \(tool) input")
+        try expectPixelRegion(
+            pixels(gesture), from: committedPixels, rect: CGRect(x: 0, y: 0, width: 640, height: 400),
+            "Beginning crop retained unfinished \(tool) pixels"
+        )
+        gesture.cancelCrop()
+        gesture.undo()
+        try expect(gesture.annotations.isEmpty, "Cancelling unfinished \(tool) while beginning crop created extra history")
+    }
+}
+
+@MainActor
+private func cropDraftBounds() throws {
+    let document = EditorDocument(baseImage: makeImage())
+    try createVisual(document, kind: "rectangle-filled")
+    document.undo()
+    let redoName = document.redoActionName
+    let originalPixels = try pixels(document)
+    let full = CGRect(x: 0, y: 0, width: 640, height: 400)
+    let invalid = [
+        CGRect.zero, CGRect(x: 10, y: 10, width: 0, height: 12),
+        CGRect(x: 10, y: 10, width: 12, height: 0),
+        CGRect(x: 700, y: 20, width: 30, height: 30),
+        CGRect(x: -40, y: -40, width: 20, height: 20),
+        CGRect(x: CGFloat.nan, y: 0, width: 30, height: 30),
+        CGRect(x: 0, y: CGFloat.infinity, width: 30, height: 30),
+        CGRect(x: 0, y: 0, width: CGFloat.infinity, height: 30),
+        CGRect(x: 0, y: 0, width: 30, height: CGFloat.nan),
+        CGRect.null, CGRect.infinite,
+    ]
+    for rect in invalid {
+        document.beginCrop()
+        document.updateCropRect(rect)
+        try expect(document.cropRect == full, "Invalid crop bounds replaced the full-image draft")
+        try expect(document.applyCrop() == false && document.cropRect == nil, "Invalid crop bounds produced an edit")
+        try expect(
+            document.annotations.isEmpty && document.canRedo && document.redoActionName == redoName,
+            "Invalid crop bounds damaged committed annotations or Redo"
+        )
+        try expectRetinaSize(document, full.size)
+    }
+    let validDraft = CGRect(x: 63, y: 51, width: 211, height: 137)
+    document.beginCrop()
+    document.updateCropRect(validDraft)
+    for rect in invalid {
+        document.updateCropRect(rect)
+        try expect(document.cropRect == validDraft, "Invalid crop bounds damaged an existing valid draft")
+    }
+    document.cancelCrop()
+    try expectPixelRegion(pixels(document), from: originalPixels, rect: full, "Invalid crop bounds changed source pixels")
+    document.redo()
+    try expect(document.annotations.count == 1, "Invalid crop attempts consumed the prior redo operation")
+
+    for (input, expected) in [
+        (CGRect(x: 237.4, y: 180.8, width: -200.2, height: -119.1), CGRect(x: 37, y: 61, width: 201, height: 120)),
+        (CGRect(x: -12.4, y: 377.3, width: 61.6, height: 44.1), CGRect(x: 0, y: 377, width: 50, height: 23)),
+        (CGRect(x: 639.8, y: 399.6, width: 0.1, height: 0.2), CGRect(x: 639, y: 399, width: 1, height: 1)),
+        (CGRect(x: 319, y: 199, width: 1, height: 1), CGRect(x: 319, y: 199, width: 1, height: 1)),
+        (CGRect(x: 11.2, y: 17.4, width: 0.15, height: 1.2), CGRect(x: 11, y: 17, width: 1, height: 2)),
+    ] {
+        let bounded = EditorDocument(baseImage: makeImage())
+        let sourceBase = try decodedPixels(bounded.baseImage)
+        let sourceExport = try pixels(bounded)
+        bounded.beginCrop()
+        bounded.updateCropRect(input)
+        try expect(bounded.cropRect == expected, "Crop did not standardize, clamp, and snap outwards to whole pixels")
+        try expect(bounded.applyCrop(), "A valid tiny/fractional crop was rejected")
+        try expectRetinaSize(bounded, expected.size)
+        try expectPixelRegion(decodedPixels(bounded.baseImage), from: sourceBase, rect: expected, "Tiny/fractional base crop")
+        try expectPixelRegion(pixels(bounded), from: sourceExport, rect: expected, "Tiny/fractional exported crop")
+        bounded.undo()
+        try expectRetinaSize(bounded, full.size)
+        try expect(bounded.canUndo == false && bounded.redoActionName == "Crop", "Tiny crop did not create exactly one history entry")
+        bounded.redo()
+        try expectPixelRegion(pixels(bounded), from: sourceExport, rect: expected, "Tiny/fractional crop redo")
+    }
+}
+
 @main
 private struct EditorAnnotationTests {
     @MainActor
@@ -1466,6 +1889,11 @@ private struct EditorAnnotationTests {
             case "duplicate-delete-history": try duplicateDeleteHistory()
             case "redo-boundaries-isolation": try redoBoundariesAndIsolation()
             case "file-export": try fileExport()
+            case "crop-retina-pixels": try cropRetinaPixels()
+            case "crop-annotations-masks": try cropAnnotationsAndMasks()
+            case "crop-interleaved-history": try cropInterleavedHistory()
+            case "crop-draft-boundaries": try cropDraftBoundaries()
+            case "crop-draft-bounds": try cropDraftBounds()
             default: throw Failure.check("Unknown test scenario")
             }
         } catch {

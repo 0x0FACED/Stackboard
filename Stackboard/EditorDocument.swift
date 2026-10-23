@@ -264,14 +264,35 @@ private struct EditorChangeBaseline {
     let selection: EditorSelection?
 }
 
-/// One operation retains only the affected object's before/after values, not the whole canvas.
-private struct EditorHistoryEntry {
+/// Ordinary operations retain only the affected object's before/after values.
+private struct EditorAnnotationChange {
     let before: EditorAnnotation?
     let after: EditorAnnotation?
     let index: Int
     let selectionBefore: EditorSelection?
     let selectionAfter: EditorSelection?
     let name: String
+}
+
+/// Only a crop changes the image coordinate system and needs a canvas-wide history payload.
+private struct EditorCropState {
+    let baseImage: NSImage
+    let pixelSize: CGSize
+    let annotations: [EditorAnnotation]
+    let selection: EditorSelection?
+    let sourceOffset: CGPoint
+}
+
+private enum EditorHistoryEntry {
+    case annotation(EditorAnnotationChange)
+    case crop(before: EditorCropState, after: EditorCropState)
+
+    var name: String {
+        switch self {
+        case let .annotation(change): return change.name
+        case .crop: return "Crop"
+        }
+    }
 }
 
 /// TextKit supplies the same wrapping, line metrics and glyph positions for input and output.
@@ -328,8 +349,10 @@ final class EditorTextLayout {
 
 @MainActor
 final class EditorDocument: ObservableObject {
-    let baseImage: NSImage
-    let pixelSize: CGSize
+    @Published private(set) var baseImage: NSImage
+    @Published private(set) var pixelSize: CGSize
+    /// An uncommitted crop in top-left current-image pixels.
+    @Published private(set) var cropRect: CGRect?
 
     @Published var selectedTool: EditorTool = .pen
     @Published private(set) var selectedColor: EditorColor = .red
@@ -362,7 +385,10 @@ final class EditorDocument: ObservableObject {
     @Published private(set) var redoActionName = ""
 
     private var interactionState: EditorCanvasInteractionState = .none
+    /// Keep the captured source intact so a crop never changes an existing blur's edge samples.
+    private let sourceCGImage: CGImage?
     private let baseCIImage: CIImage?
+    private var sourceOffset: CGPoint = .zero
     private static let ciContext = CIContext()
     private var blurImageCache: [UUID: CachedBlurImage] = [:]
     private var textLayoutCache: [UUID: (annotation: EditorTextAnnotation, layout: EditorTextLayout)] = [:]
@@ -382,11 +408,13 @@ final class EditorDocument: ObservableObject {
         self.baseImage = baseImage
         let cgImage = baseImage.cgImage(forProposedRect: nil, context: nil, hints: nil)
         pixelSize = cgImage.map { CGSize(width: $0.width, height: $0.height) } ?? baseImage.size
+        sourceCGImage = cgImage
         baseCIImage = cgImage.map { CIImage(cgImage: $0) }
         textFontSize = 24 * max(pixelSize.width / max(baseImage.size.width, 1), 1)
     }
 
     func activateTool(_ tool: EditorTool) {
+        cancelCrop()
         guard selectedTool != tool else { return }
         endStyleEditing()
         commitPendingTextInsertion()
@@ -394,7 +422,66 @@ final class EditorDocument: ObservableObject {
         selectedTool = tool
     }
 
+    func beginCrop() {
+        endStyleEditing()
+        commitPendingTextInsertion()
+        cancelInteraction()
+        cropRect = CGRect(origin: .zero, size: pixelSize)
+        updateHistoryAvailability()
+    }
+
+    func updateCropRect(_ rect: CGRect) {
+        guard cropRect != nil, let rect = normalizedCropRect(rect) else { return }
+        cropRect = rect
+    }
+
+    func cancelCrop() {
+        guard cropRect != nil else { return }
+        cropRect = nil
+        updateHistoryAvailability()
+    }
+
+    @discardableResult
+    func applyCrop() -> Bool {
+        guard let draft = cropRect, let rect = normalizedCropRect(draft) else { return false }
+        guard rect != CGRect(origin: .zero, size: pixelSize) else {
+            cancelCrop()
+            return false
+        }
+        let sourceRect = rect.offsetBy(dx: sourceOffset.x, dy: sourceOffset.y)
+        guard let cropped = sourceCGImage?.cropping(to: sourceRect),
+              cropped.width == Int(rect.width), cropped.height == Int(rect.height) else {
+            return false
+        }
+
+        let before = cropState
+        let image = NSImage(
+            cgImage: cropped,
+            size: CGSize(
+                width: rect.width * baseImage.size.width / pixelSize.width,
+                height: rect.height * baseImage.size.height / pixelSize.height
+            )
+        )
+        let delta = CGSize(width: -rect.minX, height: -rect.minY)
+        let retained = annotations.compactMap { annotation -> EditorAnnotation? in
+            guard annotationBounds(annotation).intersects(rect) else { return nil }
+            return EditorAnnotationGeometry.translated(annotation, by: delta)
+        }
+        let selection = selectedAnnotation.flatMap { selection in
+            retained.contains(where: { $0.id == selection.id }) ? selection : nil
+        }
+        let after = EditorCropState(
+            baseImage: image, pixelSize: rect.size, annotations: retained,
+            selection: selection, sourceOffset: sourceRect.origin
+        )
+        restoreCropState(after)
+        cropRect = nil
+        appendHistoryEntry(.crop(before: before, after: after))
+        return true
+    }
+
     func beginInteraction(at point: CGPoint) {
+        guard cropRect == nil else { return }
         if selectedTool == .eraser,
            CGRect(origin: .zero, size: pixelSize).contains(point) == false {
             return
@@ -449,6 +536,7 @@ final class EditorDocument: ObservableObject {
     }
 
     func updateInteraction(at point: CGPoint, constrainProportions: Bool = false) {
+        guard cropRect == nil else { return }
         switch interactionState {
         case let .drawing(anchor):
             updateDrawingInteraction(at: point, anchor: anchor)
@@ -498,6 +586,7 @@ final class EditorDocument: ObservableObject {
     }
 
     func endInteraction(at point: CGPoint, constrainProportions: Bool = false) {
+        guard cropRect == nil else { return }
         defer {
             interactionState = .none
             interactionBaseline = nil
@@ -529,6 +618,10 @@ final class EditorDocument: ObservableObject {
     }
 
     func undo() {
+        if cropRect != nil {
+            cancelCrop()
+            return
+        }
         endStyleEditing()
         if cancelInteraction() { return }
         if pendingTextInsertion != nil {
@@ -543,6 +636,10 @@ final class EditorDocument: ObservableObject {
     }
 
     func redo() {
+        if cropRect != nil {
+            cancelCrop()
+            return
+        }
         guard hasActiveInteraction == false, pendingTextInsertion == nil else { return }
         endStyleEditing()
         guard historyPosition < history.count else { return }
@@ -553,7 +650,7 @@ final class EditorDocument: ObservableObject {
 
     /// Continuous inspector controls commit their final payload as one operation.
     func beginStyleEditing() {
-        guard pendingTextInsertion == nil, styleBaseline == nil else { return }
+        guard cropRect == nil, pendingTextInsertion == nil, styleBaseline == nil else { return }
         styleBaseline = selectedChangeBaseline()
         updateHistoryAvailability()
     }
@@ -691,6 +788,7 @@ final class EditorDocument: ObservableObject {
 
     @discardableResult
     func beginEditingText(at point: CGPoint) -> Bool {
+        guard cropRect == nil else { return false }
         guard let selection = annotationSelection(at: point), selection.kind == .text else {
             return false
         }
@@ -700,6 +798,7 @@ final class EditorDocument: ObservableObject {
 
     @discardableResult
     func beginEditingSelectedText() -> Bool {
+        guard cropRect == nil else { return false }
         endStyleEditing()
         cancelInteraction()
         guard let annotation = selectedText else {
@@ -722,7 +821,7 @@ final class EditorDocument: ObservableObject {
 
     @discardableResult
     func deleteSelectedAnnotation() -> Bool {
-        guard pendingTextInsertion == nil else { return false }
+        guard cropRect == nil, pendingTextInsertion == nil else { return false }
         endStyleEditing()
         cancelInteraction()
         guard let baseline = selectedChangeBaseline() else { return false }
@@ -738,7 +837,7 @@ final class EditorDocument: ObservableObject {
 
     @discardableResult
     func duplicateSelectedAnnotation() -> Bool {
-        guard pendingTextInsertion == nil else { return false }
+        guard cropRect == nil, pendingTextInsertion == nil else { return false }
         endStyleEditing()
         cancelInteraction()
         guard let original = selectedPayload else { return false }
@@ -788,11 +887,20 @@ final class EditorDocument: ObservableObject {
 
     func renderCompositeImage() -> NSImage? {
         commitPendingTextInsertion()
+        // Keep stroke antialiasing inside the bitmap, then trim the guard pixel.
+        // Quartz otherwise clips crossing strokes differently at a newly cropped edge.
+        let padding: Int
+        if let sourceCGImage,
+           pixelSize != CGSize(width: sourceCGImage.width, height: sourceCGImage.height) {
+            padding = 1
+        } else {
+            padding = 0
+        }
 
         guard let bitmap = NSBitmapImageRep(
             bitmapDataPlanes: nil,
-            pixelsWide: max(Int(pixelSize.width.rounded()), 1),
-            pixelsHigh: max(Int(pixelSize.height.rounded()), 1),
+            pixelsWide: max(Int(pixelSize.width.rounded()), 1) + padding * 2,
+            pixelsHigh: max(Int(pixelSize.height.rounded()), 1) + padding * 2,
             bitsPerSample: 8,
             samplesPerPixel: 4,
             hasAlpha: true,
@@ -804,7 +912,12 @@ final class EditorDocument: ObservableObject {
             return nil
         }
 
-        bitmap.size = baseImage.size
+        let scaleX = baseImage.size.width / max(pixelSize.width, 1)
+        let scaleY = baseImage.size.height / max(pixelSize.height, 1)
+        bitmap.size = CGSize(
+            width: baseImage.size.width + CGFloat(padding * 2) * scaleX,
+            height: baseImage.size.height + CGFloat(padding * 2) * scaleY
+        )
 
         NSGraphicsContext.saveGraphicsState()
         defer { NSGraphicsContext.restoreGraphicsState() }
@@ -816,11 +929,9 @@ final class EditorDocument: ObservableObject {
         NSGraphicsContext.current = graphicsContext
         graphicsContext.imageInterpolation = .high
 
-        let scaleX = baseImage.size.width / max(pixelSize.width, 1)
-        let scaleY = baseImage.size.height / max(pixelSize.height, 1)
-
         graphicsContext.cgContext.saveGState()
         graphicsContext.cgContext.scaleBy(x: scaleX, y: scaleY)
+        graphicsContext.cgContext.translateBy(x: CGFloat(padding), y: CGFloat(padding))
         baseImage.draw(in: CGRect(origin: .zero, size: pixelSize))
 
         let isolateAnnotations = hasEraser
@@ -851,6 +962,13 @@ final class EditorDocument: ObservableObject {
             graphicsContext.cgContext.endTransparencyLayer()
         }
         graphicsContext.cgContext.restoreGState()
+        if padding > 0 {
+            guard let cropped = bitmap.cgImage?.cropping(to: CGRect(
+                x: padding, y: padding, width: Int(pixelSize.width), height: Int(pixelSize.height)
+            )) else { return nil }
+            return NSImage(cgImage: cropped, size: baseImage.size)
+        }
+
 
         let image = NSImage(size: baseImage.size)
         image.addRepresentation(bitmap)
@@ -914,7 +1032,7 @@ final class EditorDocument: ObservableObject {
     }
 
     var selectionOverlay: EditorSelectionOverlay? {
-        guard pendingTextInsertion == nil, let selection = selectedAnnotation,
+        guard cropRect == nil, pendingTextInsertion == nil, let selection = selectedAnnotation,
               let annotation = selectedPayload else { return nil }
         let rect = annotationBounds(annotation)
         if case let .arrow(arrow) = annotation {
@@ -1051,6 +1169,10 @@ final class EditorDocument: ObservableObject {
     }
 
     func handleEscape() -> Bool {
+        if cropRect != nil {
+            cancelCrop()
+            return true
+        }
         endStyleEditing()
         if pendingTextInsertion != nil {
             commitPendingTextInsertion()
@@ -1160,7 +1282,8 @@ final class EditorDocument: ObservableObject {
     }
 
     private func changeSelected(name: String, transform: (EditorAnnotation) -> EditorAnnotation) {
-        guard pendingTextInsertion == nil, let baseline = selectedChangeBaseline() else { return }
+        guard cropRect == nil, pendingTextInsertion == nil,
+              let baseline = selectedChangeBaseline() else { return }
         let after = transform(baseline.annotation)
         guard after != baseline.annotation else { return }
         annotations[baseline.index] = after
@@ -1195,36 +1318,83 @@ final class EditorDocument: ObservableObject {
         selectionBefore: EditorSelection?, name: String
     ) -> Bool {
         guard before != after else { return false }
-        if historyPosition < history.count {
-            history.removeSubrange(historyPosition...)
-        }
-        history.append(EditorHistoryEntry(
+        appendHistoryEntry(.annotation(EditorAnnotationChange(
             before: before, after: after, index: index,
             selectionBefore: selectionBefore, selectionAfter: selectedAnnotation, name: name
-        ))
-        historyPosition += 1
-        updateHistoryAvailability()
+        )))
         return true
     }
 
+    private func appendHistoryEntry(_ entry: EditorHistoryEntry) {
+        if historyPosition < history.count {
+            history.removeSubrange(historyPosition...)
+        }
+        history.append(entry)
+        historyPosition += 1
+        updateHistoryAvailability()
+    }
+
     private func applyHistoryEntry(_ entry: EditorHistoryEntry, forward: Bool) {
-        let previous = forward ? entry.before : entry.after
-        let next = forward ? entry.after : entry.before
+        switch entry {
+        case let .crop(before, after):
+            restoreCropState(forward ? after : before)
+        case let .annotation(change):
+            applyAnnotationChange(change, forward: forward)
+        }
+    }
+
+    private func applyAnnotationChange(_ change: EditorAnnotationChange, forward: Bool) {
+        let previous = forward ? change.before : change.after
+        let next = forward ? change.after : change.before
         if previous != nil {
             if let next {
-                annotations[entry.index] = next
+                annotations[change.index] = next
             } else {
-                let removed = annotations.remove(at: entry.index)
+                let removed = annotations.remove(at: change.index)
                 discardCaches(for: removed.id)
             }
         } else if let next {
-            annotations.insert(next, at: entry.index)
+            annotations.insert(next, at: change.index)
         }
         selectedAnnotation = nil
-        if let selection = forward ? entry.selectionAfter : entry.selectionBefore,
+        if let selection = forward ? change.selectionAfter : change.selectionBefore,
            annotations.contains(where: { $0.id == selection.id }) {
             select(selection)
         }
+    }
+
+    private var cropState: EditorCropState {
+        EditorCropState(
+            baseImage: baseImage, pixelSize: pixelSize, annotations: annotations,
+            selection: selectedAnnotation, sourceOffset: sourceOffset
+        )
+    }
+
+    private func restoreCropState(_ state: EditorCropState) {
+        baseImage = state.baseImage
+        pixelSize = state.pixelSize
+        annotations = state.annotations
+        sourceOffset = state.sourceOffset
+        blurImageCache.removeAll(keepingCapacity: true)
+        textLayoutCache.removeAll(keepingCapacity: true)
+        pendingLayoutCache = nil
+        selectedAnnotation = nil
+        if let selection = state.selection { select(selection) }
+    }
+
+    private func normalizedCropRect(_ rect: CGRect) -> CGRect? {
+        guard rect.isNull == false, rect.isInfinite == false,
+              rect.origin.x.isFinite, rect.origin.y.isFinite,
+              rect.size.width.isFinite, rect.size.height.isFinite else { return nil }
+        let standardized = rect.standardized
+        guard standardized.minX.isFinite, standardized.minY.isFinite,
+              standardized.maxX.isFinite, standardized.maxY.isFinite,
+              standardized.isEmpty == false else { return nil }
+        let bounds = CGRect(origin: .zero, size: pixelSize)
+        let intersection = standardized.intersection(bounds)
+        guard intersection.isNull == false, intersection.isEmpty == false else { return nil }
+        let snapped = intersection.integral.intersection(bounds)
+        return snapped.isEmpty ? nil : snapped
     }
 
     private func discardCaches(for id: UUID) {
@@ -1233,10 +1403,10 @@ final class EditorDocument: ObservableObject {
     }
 
     private func updateHistoryAvailability() {
-        let undoAvailable = hasActiveInteraction || historyPosition > 0
-        let redoAvailable = hasActiveInteraction == false && pendingTextInsertion == nil &&
+        let undoAvailable = cropRect != nil || hasActiveInteraction || historyPosition > 0
+        let redoAvailable = cropRect == nil && hasActiveInteraction == false && pendingTextInsertion == nil &&
             styleBaseline == nil && historyPosition < history.count
-        let undoName = hasActiveInteraction ? "Current Gesture" :
+        let undoName = cropRect != nil ? "Crop" : hasActiveInteraction ? "Current Gesture" :
             (historyPosition > 0 ? history[historyPosition - 1].name : "")
         let redoName = redoAvailable ? history[historyPosition].name : ""
         if canUndo != undoAvailable { canUndo = undoAvailable }
@@ -1373,8 +1543,13 @@ final class EditorDocument: ObservableObject {
             return cached.image
         }
 
-        let ciRect = flip(rect: blur.rect).integral
-        guard ciRect.isEmpty == false, let baseCIImage else {
+        guard let baseCIImage else { return nil }
+        let sourceRect = blur.rect.offsetBy(dx: sourceOffset.x, dy: sourceOffset.y)
+        let ciRect = CGRect(
+            x: sourceRect.minX, y: baseCIImage.extent.height - sourceRect.maxY,
+            width: sourceRect.width, height: sourceRect.height
+        ).integral
+        guard ciRect.isEmpty == false else {
             return nil
         }
 

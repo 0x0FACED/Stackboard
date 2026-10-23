@@ -53,7 +53,7 @@ struct ScreenshotEditorView: View {
                         ForEach(EditorTool.allCases) { tool in
                             EditorToolbarIconButton(
                                 systemImage: tool.iconName,
-                                isSelected: document.selectedTool == tool,
+                                isSelected: document.cropRect == nil && document.selectedTool == tool,
                                 accessibilityLabel: tool.title
                             ) {
                                 if document.selectedTool != tool {
@@ -62,6 +62,22 @@ struct ScreenshotEditorView: View {
                                 document.activateTool(tool)
                             }
                             .help(toolHelp(for: tool))
+
+                            if tool == .move {
+                                EditorToolbarIconButton(
+                                    systemImage: "crop",
+                                    isSelected: document.cropRect != nil,
+                                    accessibilityLabel: "Crop"
+                                ) {
+                                    nativeInput.finishAnnotationEditing()
+                                    if document.cropRect == nil {
+                                        document.beginCrop()
+                                    } else {
+                                        document.cancelCrop()
+                                    }
+                                }
+                                .help("Crop the image and annotations. Enter applies; Esc cancels.")
+                            }
                         }
                     }
 
@@ -119,6 +135,7 @@ struct ScreenshotEditorView: View {
                         .accessibilityLabel("Custom color")
                         .help("Choose a custom color and opacity")
                     }
+                    .disabled(document.cropRect != nil)
 
                     if contextMode != .none {
                         Divider()
@@ -131,7 +148,7 @@ struct ScreenshotEditorView: View {
                         }
                     }
 
-                    if document.selectedAnnotation != nil {
+                    if document.cropRect == nil, document.selectedAnnotation != nil {
                         Divider()
                         HStack {
                             Button("Duplicate") {
@@ -153,6 +170,25 @@ struct ScreenshotEditorView: View {
             Divider()
 
             VStack(spacing: 8) {
+                if let crop = document.cropRect {
+                    Text("\(Int(crop.width)) × \(Int(crop.height)) px")
+                        .font(.system(size: 12, weight: .medium))
+                        .monospacedDigit()
+                        .accessibilityLabel("Crop size: \(Int(crop.width)) by \(Int(crop.height)) pixels")
+                    HStack {
+                        Button("Apply") { document.applyCrop() }
+                            .help("Apply crop (Enter)")
+                        Button("Cancel") { document.cancelCrop() }
+                            .help("Cancel crop (Esc)")
+                    }
+                    .focusable(false)
+                    Text("Drag edges or corners to resize.\nDrag inside to move the frame.")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Divider()
+                }
+
                 HStack {
                     Button {
                         if usesNativeHistory {
@@ -202,12 +238,16 @@ struct ScreenshotEditorView: View {
 
     private func copyToClipboard() {
         nativeInput.finishAnnotationEditing()
+        if document.cropRect != nil { document.applyCrop() }
+        guard document.cropRect == nil else { return }
         onCopy()
     }
 
     private func saveToFile() {
         nativeInput.finishAnnotationEditing()
         document.commitPendingTextInsertion()
+        if document.cropRect != nil { document.applyCrop() }
+        guard document.cropRect == nil else { return }
         onSave()
     }
 
@@ -389,6 +429,7 @@ struct ScreenshotEditorView: View {
     }
 
     private var contextMode: EditorToolbarContextMode {
+        if document.cropRect != nil { return .none }
         switch document.selectedTool {
         case .move:
             switch document.selectedAnnotation?.kind {
@@ -534,6 +575,13 @@ private struct EditorCanvasView: View {
                 zoomBadge(zoomScale)
             }
         }
+        .onChange(of: document.pixelSize) { _ in
+            baseZoomScale = 1
+            liveMagnification = 1
+            didBeginInteraction = false
+            isEditingDoubleClick = false
+            eraserCursorLocation = nil
+        }
     }
 
     private func editorSurface(canvasSize: CGSize) -> some View {
@@ -550,7 +598,7 @@ private struct EditorCanvasView: View {
                     .allowsHitTesting(false)
             }
 
-            if let selectionOverlay = document.selectionOverlay {
+            if document.cropRect == nil, let selectionOverlay = document.selectionOverlay {
                 AnnotationSelectionOverlayView(
                     overlay: selectionOverlay,
                     pixelSize: document.pixelSize
@@ -573,6 +621,7 @@ private struct EditorCanvasView: View {
                         eraserCursorLocation = nil
                     }
                 }
+                .allowsHitTesting(document.cropRect == nil)
 
             if document.selectedTool == .eraser, let eraserCursorLocation {
                 let diameter = document.activeEraser?.lineWidth ?? CGFloat(document.eraserWidth)
@@ -604,10 +653,14 @@ private struct EditorCanvasView: View {
                     }
                 )
             }
+
+            if document.cropRect != nil {
+                EditorCropOverlay(document: document, canvasSize: canvasSize)
+            }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: document.cropRect == nil ? 18 : 0, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: document.cropRect == nil ? 18 : 0, style: .continuous)
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.24), radius: 24, y: 14)
@@ -1472,6 +1525,22 @@ private struct EditorKeyboardMonitorView: NSViewRepresentable {
                 nativeInput.finishAnnotationEditing()
                 _ = document.handleEscape()
                 return nil
+            }
+
+            if document.cropRect != nil,
+               modifiers.intersection([.command, .control, .option]).isEmpty {
+                switch event.keyCode {
+                case 36, 76:
+                    if event.isARepeat == false { document.applyCrop() }
+                    return nil
+                case 53:
+                    document.cancelCrop()
+                    return nil
+                case 51, 117:
+                    return nil
+                default:
+                    break
+                }
             }
 
             guard modifiers.intersection([.command, .control, .option]).isEmpty,
