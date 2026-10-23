@@ -19,6 +19,7 @@ struct ScreenshotEditorView: View {
     @StateObject private var nativeInput = EditorNativeInputState()
     var minimumSize: CGSize = Self.minimumContentSize
     let onCopy: () -> Void
+    let onSave: () -> Void
 
     private let palette: [EditorColor] = [.yellow, .red, .blue, .green, .white]
 
@@ -35,7 +36,8 @@ struct ScreenshotEditorView: View {
             EditorKeyboardMonitorView(
                 document: document,
                 nativeInput: nativeInput,
-                onCopy: copyToClipboard
+                onCopy: copyToClipboard,
+                onSave: saveToFile
             )
         )
         .onAppear {
@@ -181,6 +183,12 @@ struct ScreenshotEditorView: View {
                     .focusable(false)
                 }
 
+                Button(action: saveToFile) {
+                    Text("Save…")
+                        .frame(maxWidth: .infinity)
+                }
+                .help("Save as PNG or JPEG (⌘S). Keeps the editor open.")
+
                 Button(action: copyToClipboard) {
                     Text("Copy to Clipboard")
                         .frame(maxWidth: .infinity)
@@ -195,6 +203,12 @@ struct ScreenshotEditorView: View {
     private func copyToClipboard() {
         nativeInput.finishAnnotationEditing()
         onCopy()
+    }
+
+    private func saveToFile() {
+        nativeInput.finishAnnotationEditing()
+        document.commitPendingTextInsertion()
+        onSave()
     }
 
     @ViewBuilder
@@ -1403,6 +1417,7 @@ private struct EditorKeyboardMonitorView: NSViewRepresentable {
     let document: EditorDocument
     let nativeInput: EditorNativeInputState
     let onCopy: () -> Void
+    let onSave: () -> Void
 
     func makeNSView(context: Context) -> EditorKeyboardMonitorHost {
         let host = EditorKeyboardMonitorHost()
@@ -1420,6 +1435,14 @@ private struct EditorKeyboardMonitorView: NSViewRepresentable {
             let hasNativeInput = nativeTextView != nil ||
                 window.firstResponder is NSTextField || nativeInput.hasActiveInput ||
                 document.pendingTextInsertion != nil
+
+            if modifiers == .command,
+               (event.keyCode == 1 || event.charactersIgnoringModifiers?.lowercased() == "s") {
+                if event.isARepeat == false {
+                    onSave()
+                }
+                return nil
+            }
 
             if modifiers == .command || modifiers == [.command, .shift] {
                 if event.keyCode == 6 || event.charactersIgnoringModifiers?.lowercased() == "z" {

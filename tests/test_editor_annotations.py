@@ -23,6 +23,7 @@ class EditorAnnotationTests(unittest.TestCase):
                 "-module-cache-path", str(output / "module-cache"),
                 str(root / "Stackboard" / "EditorDocument.swift"),
                 str(root / "Stackboard" / "EditorAnnotationGeometry.swift"),
+                str(root / "Stackboard" / "ScreenshotExport.swift"),
                 str(root / "tests" / "EditorAnnotationTests.swift"),
                 "-o", str(cls.executable),
             ],
@@ -88,6 +89,9 @@ class EditorAnnotationTests(unittest.TestCase):
 
     def test_noops_and_cancel_preserve_redo_and_editors_have_independent_history(self):
         self.run_scenario("redo-boundaries-isolation")
+
+    def test_png_and_jpeg_preserve_retina_composites_alpha_and_quality(self):
+        self.run_scenario("file-export")
 
 
 if __name__ == "__main__":

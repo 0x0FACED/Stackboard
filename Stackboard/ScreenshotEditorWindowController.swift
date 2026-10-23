@@ -36,7 +36,8 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
             rootView: ScreenshotEditorView(
                 document: editorDocument,
                 minimumSize: minimumContentSize,
-                onCopy: { }
+                onCopy: { },
+                onSave: { }
             )
         )
         hostingController.sizingOptions = [.minSize]
@@ -49,10 +50,14 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
         window.delegate = self
         hostingController.rootView = ScreenshotEditorView(
             document: editorDocument,
-            minimumSize: minimumContentSize
-        ) { [weak self] in
-            self?.copyAndClose()
-        }
+            minimumSize: minimumContentSize,
+            onCopy: { [weak self] in
+                self?.copyAndClose()
+            },
+            onSave: { [weak self] in
+                self?.saveToFile()
+            }
+        )
 
         // Hosting attachment and initial layout can replace the window's requested size.
         hostingController.view.layoutSubtreeIfNeeded()
@@ -85,6 +90,39 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
             appController.copyImageToClipboard(image)
         }
         close()
+    }
+
+    private func saveToFile() {
+        guard let window, window.attachedSheet == nil else { return }
+        editorDocument.commitPendingTextInsertion()
+
+        let panel = NSSavePanel()
+        panel.title = "Save Screenshot"
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.allowedContentTypes = [ScreenshotExportFormat.png.contentType]
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd 'at' HH.mm.ss"
+        panel.nameFieldStringValue = "Screenshot \(dateFormatter.string(from: Date()))"
+        let options = ScreenshotSaveOptionsView(panel: panel)
+        panel.accessoryView = options
+
+        panel.beginSheetModal(for: window) { [weak self] response in
+            panel.orderOut(nil)
+            guard response == .OK, let self, let url = panel.url else { return }
+            do {
+                guard let image = self.editorDocument.renderCompositeImage() else {
+                    throw ScreenshotExportError.renderingFailed
+                }
+                try options.format.write(image, to: url, jpegQuality: options.jpegQuality)
+            } catch {
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "The screenshot could not be saved."
+                alert.informativeText = error.localizedDescription
+                alert.beginSheetModal(for: window)
+            }
+        }
     }
 
     private static func visibleFrame(for selectionRect: CGRect) -> CGRect {
@@ -144,5 +182,73 @@ final class ScreenshotEditorWindowController: NSWindowController, NSWindowDelega
             width: frame.width,
             height: frame.height
         )
+    }
+}
+
+@MainActor
+private final class ScreenshotSaveOptionsView: NSStackView {
+    private weak var panel: NSSavePanel?
+    private let formatPicker = NSPopUpButton()
+    private let qualitySlider = NSSlider(value: 0.9, minValue: 0, maxValue: 1, target: nil, action: nil)
+    private let qualityValue = NSTextField(labelWithString: "90%")
+    private let qualityLabel = NSTextField(labelWithString: "JPEG quality:")
+
+    var format: ScreenshotExportFormat {
+        ScreenshotExportFormat.allCases[formatPicker.indexOfSelectedItem]
+    }
+
+    var jpegQuality: Double { qualitySlider.doubleValue }
+
+    init(panel: NSSavePanel) {
+        self.panel = panel
+        super.init(frame: .zero)
+        orientation = .vertical
+        alignment = .leading
+        spacing = 10
+        edgeInsets = NSEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
+
+        let formatLabel = NSTextField(labelWithString: "Format:")
+        formatPicker.addItems(withTitles: ScreenshotExportFormat.allCases.map(\.rawValue))
+        formatPicker.target = self
+        formatPicker.action = #selector(formatChanged)
+        formatPicker.setAccessibilityLabel("Image format")
+        qualitySlider.target = self
+        qualitySlider.action = #selector(qualityChanged)
+        qualitySlider.setAccessibilityLabel("JPEG quality")
+        qualityValue.alignment = .right
+        qualityValue.font = .monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+        qualityValue.setAccessibilityLabel("JPEG quality percentage")
+
+        addArrangedSubview(NSStackView(views: [formatLabel, formatPicker]))
+        addArrangedSubview(NSStackView(views: [qualityLabel, qualitySlider, qualityValue]))
+        NSLayoutConstraint.activate([
+            formatLabel.widthAnchor.constraint(equalToConstant: 95),
+            qualityLabel.widthAnchor.constraint(equalTo: formatLabel.widthAnchor),
+            formatPicker.widthAnchor.constraint(equalToConstant: 210),
+            qualitySlider.widthAnchor.constraint(equalToConstant: 160),
+            qualityValue.widthAnchor.constraint(equalToConstant: 42)
+        ])
+        updateQualityControls()
+        setFrameSize(fittingSize)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { nil }
+
+    @objc private func formatChanged() {
+        guard let panel else { return }
+        panel.allowedContentTypes = [format.contentType]
+        updateQualityControls()
+    }
+
+    @objc private func qualityChanged() {
+        qualityValue.stringValue = "\(Int((jpegQuality * 100).rounded()))%"
+    }
+
+    private func updateQualityControls() {
+        let isJPEG = format == .jpeg
+        qualitySlider.isEnabled = isJPEG
+        qualityLabel.textColor = isJPEG ? .labelColor : .disabledControlTextColor
+        qualityValue.textColor = qualityLabel.textColor
     }
 }

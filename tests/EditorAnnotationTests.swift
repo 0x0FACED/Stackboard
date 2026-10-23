@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 
 private enum Failure: Error {
     case check(String)
@@ -1372,6 +1373,75 @@ private func redoBoundariesAndIsolation() throws {
     try expect(other.annotations.isEmpty && other.canRedo, "Redo in one editor affected another editor")
 }
 
+@MainActor
+private func fileExport() throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let document = EditorDocument(baseImage: makeImage())
+    rectangle(document)
+    erase(document, from: CGPoint(x: 100, y: 160), to: CGPoint(x: 380, y: 160))
+    guard let image = document.renderCompositeImage() else {
+        throw Failure.check("Could not render export fixture")
+    }
+    let original = try pixels(document)
+    let pngURL = directory.appendingPathComponent("image.png")
+    try ScreenshotExportFormat.png.write(image, to: pngURL, jpegQuality: 0.9)
+    guard let png = NSBitmapImageRep(data: try Data(contentsOf: pngURL)),
+          let pngSource = CGImageSourceCreateWithURL(pngURL as CFURL, nil) else {
+        throw Failure.check("Saved PNG could not be decoded")
+    }
+    try expect(CGImageSourceGetType(pngSource) as String? == "public.png", "PNG contains the wrong format")
+    try expect(png.pixelsWide == 640 && png.pixelsHigh == 400, "PNG lost Retina resolution")
+    for y in 0..<400 {
+        for x in 0..<640 {
+            try same(png, original, at: CGPoint(x: x, y: y), "PNG changed annotation pixels or alpha")
+        }
+    }
+
+    func jpeg(_ quality: Double, name: String) throws -> NSBitmapImageRep {
+        let url = directory.appendingPathComponent(name)
+        try ScreenshotExportFormat.jpeg.write(image, to: url, jpegQuality: quality)
+        guard let bitmap = NSBitmapImageRep(data: try Data(contentsOf: url)),
+              let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            throw Failure.check("Saved JPEG could not be decoded")
+        }
+        try expect(CGImageSourceGetType(source) as String? == "public.jpeg", "JPEG contains the wrong format")
+        try expect(bitmap.pixelsWide == 640 && bitmap.pixelsHigh == 400, "JPEG lost Retina resolution")
+        try expect(
+            distance(color(bitmap, CGPoint(x: 560, y: 360)), NSColor.white.usingColorSpace(.sRGB)!) < 0.03,
+            "JPEG did not flatten transparent pixels over white"
+        )
+        return bitmap
+    }
+    let low = try jpeg(0.05, name: "low.jpg")
+    let high = try jpeg(1, name: "high.jpg")
+    var lowError: CGFloat = 0
+    var highError: CGFloat = 0
+    for y in stride(from: 0, to: 300, by: 7) {
+        for x in stride(from: 0, to: 640, by: 7) {
+            let point = CGPoint(x: x, y: y)
+            let expected = color(original, point)
+            lowError += distance(color(low, point), expected)
+            highError += distance(color(high, point), expected)
+        }
+    }
+    try expect(highError < lowError, "JPEG quality did not improve fidelity to the composite")
+
+    let invalidURL = directory.appendingPathComponent("missing/image.png")
+    var writeFailed = false
+    do {
+        try ScreenshotExportFormat.png.write(image, to: invalidURL, jpegQuality: 0.9)
+    } catch {
+        writeFailed = true
+    }
+    try expect(writeFailed, "Export silently succeeded when the destination directory was missing")
+    try expectSamePixels(pixels(document), original, "Failed export changed the document")
+    let savedPNG = NSBitmapImageRep(data: try Data(contentsOf: pngURL))!
+    try expectSamePixels(savedPNG, png, "Failed export damaged the previously saved file")
+}
+
 @main
 private struct EditorAnnotationTests {
     @MainActor
@@ -1395,6 +1465,7 @@ private struct EditorAnnotationTests {
             case "selected-style-history": try selectedStyleHistory()
             case "duplicate-delete-history": try duplicateDeleteHistory()
             case "redo-boundaries-isolation": try redoBoundariesAndIsolation()
+            case "file-export": try fileExport()
             default: throw Failure.check("Unknown test scenario")
             }
         } catch {
