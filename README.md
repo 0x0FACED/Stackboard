@@ -273,7 +273,16 @@ bash scripts/package-release.sh --verify-existing 0.0.0 dist/0.0.0
 | Сохранение PNG/JPEG | [`ScreenshotEditorWindowController.swift`](Stackboard/ScreenshotEditorWindowController.swift), [`ScreenshotExport.swift`](Stackboard/ScreenshotExport.swift) |
 | Открытие изображений и команды | [`EditorImageImport.swift`](Stackboard/EditorImageImport.swift), [`ImageOpenCoordinator.swift`](Stackboard/ImageOpenCoordinator.swift) |
 | Горячие клавиши | [`GlobalHotKeyCenter.swift`](Stackboard/GlobalHotKeyCenter.swift), [`HotkeySettingsStore.swift`](Stackboard/HotkeySettingsStore.swift) |
+| Иконка и значок строки меню | [`StatusBarIcon.swift`](Stackboard/StatusBarIcon.swift), [`Assets.xcassets`](Stackboard/Assets.xcassets/), [`generate-icons.swift`](scripts/generate-icons.swift) |
 | Сборка и публикация | [`scripts/`](scripts/), [GitHub Actions](.github/workflows/) |
+
+Иконки используют общий мотив стопки карточек: цветная иконка приложения дополнена рамкой захвата, а значок строки меню упрощён для 18 точек. Значок меню — системный template с прозрачным фоном и вариантами 1×/2×; его цвет выбирает macOS. Для приложения заполнены все размеры AppIcon от 16 до 1024 пикселей.
+
+Исходная геометрия и палитра находятся в `scripts/generate-icons.swift`. Перегенерация PNG на macOS без сторонних зависимостей:
+
+```sh
+xcrun swift scripts/generate-icons.swift
+```
 
 Проверки разработки:
 
