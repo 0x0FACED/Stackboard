@@ -30,7 +30,7 @@ Once the app is running, its main actions are available from the Stackboard icon
 | Open clipboard history | `⌘⇧V` — Command + Shift + V |
 | Open an image file | `⌘O` — while Stackboard is active |
 
-The screenshot and history shortcuts are global. To change them, choose **Keyboard Shortcuts…** from the menu, click a shortcut field, and enter a combination with at least one modifier key. **Reset Defaults** restores the defaults.
+The screenshot and history shortcuts are global. To change them, open **More actions** (the ellipsis button) in the menu bar panel and choose **Keyboard Shortcuts…**. Click a shortcut field and enter a combination with at least one modifier key. **Reset Defaults** restores the defaults.
 
 If macOS or another app already uses a combination, the settings window shows a conflict. Choose another combination or use the menu actions. `⌘O` is a regular app command, not a global shortcut.
 
@@ -57,6 +57,7 @@ Save or copy a result before closing its window or quitting Stackboard. Exported
 | **Pen** | Draw freehand. |
 | **Eraser** | Erase parts of annotations without changing the underlying image. |
 | **Arrow** | Draw an arrow. |
+| **Line** | Drag to draw a straight line without an arrowhead. |
 | **Rectangle** | Draw a rectangle; hold `Shift` for a square. |
 | **Ellipse** | Draw an ellipse; hold `Shift` for a circle. |
 | **Blur** | Blur a rectangular area. |
@@ -64,17 +65,17 @@ Save or copy a result before closing its window or quitting Stackboard. Exported
 
 Use the sidebar to adjust line width, shape appearance, eraser size, blur strength, or text formatting. For rectangles and ellipses, **Outline** draws only the border and **Filled** adds a fill. **Line width** is measured in pixels of the original image.
 
-The **Custom color** swatch beside the quick colors opens the macOS color picker, including opacity. A color choice applies to new drawings, arrows, shapes, and text, and to a selected colored annotation.
+The **Custom color** swatch beside the quick colors opens the macOS color picker, including opacity. A color choice applies to new drawings, arrows, lines, shapes, and text, and to a selected colored annotation.
 
 **Blur is not a reliable way to remove secrets from an image.** Do not treat it as secure redaction.
 
 ### Select, move, resize, and remove annotations
 
-With **Move**, click a drawing or arrow's line, a shape's outline, or the interior of a filled shape, text box, or blur region. Overlapping annotations select the topmost visible object. The empty center of an outline shape does not block objects beneath it, and erased parts cannot be selected.
+With **Move**, click a drawing, arrow, or straight line, a shape's outline, or the interior of a filled shape, text box, or blur region. Overlapping annotations select the topmost visible object. The empty center of an outline shape does not block objects beneath it, and erased parts cannot be selected.
 
-Drag the selected part to move an object without snapping it to the pointer. Arrows have separate start and end handles. Drawings, shapes, and blur regions have a bottom-right resize handle; hold `Shift` while resizing to preserve proportions. Text has a separate width handle, described below.
+Drag the selected part to move an object without snapping it to the pointer. Arrows and straight lines have separate start and end handles. Drawings, shapes, and blur regions have a bottom-right resize handle; hold `Shift` while resizing to preserve proportions. Text has a separate width handle, described below.
 
-Sidebar settings apply to the selected object: drawing or arrow color and width, shape fill and outline, blur strength, or text formatting.
+Sidebar settings apply to the selected object: drawing, arrow, or line color and width, shape fill and outline, blur strength, or text formatting.
 
 - **Delete** or the `Delete` key removes the selected object.
 - **Duplicate** or `⌘D` adds a copy above the existing annotations, offset slightly if the image has room. Previous eraser strokes are not applied to the duplicate.
@@ -133,9 +134,9 @@ Canceling the dialog leaves the editor open. A write error also leaves it open a
 
 ## Open an existing image
 
-Choose **Open Image…** from the Stackboard menu bar icon or **File → Open Image…**. While Stackboard is active, you can also press `⌘O`. Select one file in the dialog.
+Choose **Open Image → From File…** from the Stackboard menu bar panel or **File → Open Image…**. While Stackboard is active, you can also press `⌘O`. Select one file in the dialog.
 
-For image pixels already on the clipboard, choose **Open Image from Clipboard** from the menu bar icon or **File** menu. This command reads an image, not a path, link, or file copied in Finder. Ordinary `⌘V` during text entry is unchanged.
+For image pixels already on the clipboard, choose **Open Image → From Clipboard** from the menu bar panel or **File → Open Image from Clipboard**. This command reads an image, not a path, link, or file copied in Finder. Ordinary `⌘V` during text entry is unchanged.
 
 Each opening creates a separate editor. Existing windows, annotations, crop rectangles, and histories are unaffected. Canceling the file dialog or an import error does not close existing editors.
 
@@ -156,16 +157,18 @@ While Stackboard is running, it automatically records supported clipboard conten
 
 1. Choose **Open Clipboard History** or press `⌘⇧V`.
 2. Search by text, file name/path, or date. Search does not recognize text inside images.
-3. Select an entry to preview it.
-4. Choose **Copy Again**, then paste into the destination app with its normal `⌘V` command.
+3. Select an entry in the list to read its full text or file path, or view its image in the larger preview. Selecting an entry does not copy it.
+4. Choose **Copy Again** above the preview, then paste into the destination app with its normal `⌘V` command.
 
-The eight most recent entries are also available directly from the menu bar menu. Use **Pin** to protect an entry from automatic cleanup, or **Delete** to remove an individual entry.
+**Pin** / **Unpin** and **Delete** are beside the preview's copy action and in each entry's context menu. Pinned entries are grouped separately and protected from automatic cleanup; the highlighted row is the current selection.
+
+The eight most recent entries are also available in the menu bar panel. Click one to copy it immediately; scroll the recent list to reach later entries. **Open Clipboard History** at the bottom opens the full window. The panel's **More actions** menu contains keyboard shortcut settings, history clearing, and Quit.
 
 ### Retention and clearing
 
 The cleanup menu offers **7 days**, **30 days**, **90 days**, or **Keep Forever**. The default is **30 days**. Pinned entries are excluded from automatic cleanup.
 
-**Clear** in the history window and **Clear History** in the menu remove the entire history, **including pinned entries**. Pins do not protect against explicit deletion or clearing.
+**Clear History** in the history window or under **More actions** in the menu bar panel removes the entire history, **including pinned entries**. Pins do not protect against explicit deletion or clearing.
 
 Turning off age-based cleanup does not remove the entry-count limit. Clipboard history is not an indefinite archive; keep important content separately.
 

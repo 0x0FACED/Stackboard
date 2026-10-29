@@ -414,11 +414,13 @@ struct ScreenshotEditorView: View {
     private func toolHelp(for tool: EditorTool) -> String {
         switch tool {
         case .move:
-            return "Select any object to move. Drag handles to resize or adjust arrow endpoints; double-click text to edit."
+            return "Select any object to move. Drag handles to resize or adjust arrow and line endpoints; double-click text to edit."
         case .text:
             return "Click the image to type, or click existing text to edit"
         case .eraser:
             return "Erase annotations without changing the screenshot. Undo restores erased marks."
+        case .line:
+            return "Draw a straight line. Use Move to adjust either endpoint."
         case .rectangle:
             return "Draw a rectangle. Hold Shift for a square."
         case .ellipse:
@@ -433,7 +435,7 @@ struct ScreenshotEditorView: View {
         switch document.selectedTool {
         case .move:
             switch document.selectedAnnotation?.kind {
-            case .stroke?, .arrow?:
+            case .stroke?, .arrow?, .line?:
                 return .lineWidth
             case .shape?:
                 return .shape
@@ -444,7 +446,7 @@ struct ScreenshotEditorView: View {
             case nil:
                 return .none
             }
-        case .pen, .arrow:
+        case .pen, .arrow, .line:
             return .lineWidth
         case .eraser:
             return .eraser
@@ -803,7 +805,7 @@ private struct AnnotationLayersView: View {
         ZStack(alignment: .topLeading) {
             ForEach(document.committedAndActiveAnnotations) { annotation in
                 switch annotation {
-                case .stroke, .arrow, .shape:
+                case .stroke, .arrow, .line, .shape:
                     AnnotationCanvasView(annotation: annotation, pixelSize: document.pixelSize)
                 case .eraser:
                     AnnotationCanvasView(annotation: annotation, pixelSize: document.pixelSize)
@@ -878,6 +880,8 @@ private struct AnnotationCanvasView: View {
                 context.fill(Path(eraser.path), with: .color(.white))
             case let .arrow(arrow):
                 drawArrow(arrow, in: &context)
+            case let .line(line):
+                drawLine(line, in: &context)
             case let .shape(shape):
                 drawShape(shape, in: &context)
             case .blur, .text:
@@ -921,6 +925,17 @@ private struct AnnotationCanvasView: View {
             Path(EditorAnnotationGeometry.arrowPath(arrow)),
             with: .color(Color(nsColor: arrow.color.nsColor)),
             style: StrokeStyle(lineWidth: arrow.lineWidth, lineCap: .round, lineJoin: .round)
+        )
+    }
+
+    private func drawLine(_ line: EditorLine, in context: inout GraphicsContext) {
+        var path = Path()
+        path.move(to: line.start)
+        path.addLine(to: line.end)
+        context.stroke(
+            path,
+            with: .color(Color(nsColor: line.color.nsColor)),
+            style: StrokeStyle(lineWidth: line.lineWidth, lineCap: .round)
         )
     }
 

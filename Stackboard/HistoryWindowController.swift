@@ -35,7 +35,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         )
 
         let window = EscapeAwareWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 1120, height: 780),
+            contentRect: CGRect(x: 0, y: 0, width: 1040, height: 700),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -46,6 +46,7 @@ final class HistoryWindowController: NSWindowController, NSWindowDelegate {
         window.collectionBehavior = [.managed, .moveToActiveSpace, .fullScreenAuxiliary]
         window.hidesOnDeactivate = false
         window.contentViewController = hostingController
+        window.contentMinSize = NSSize(width: 860, height: 560)
         window.isReleasedWhenClosed = false
 
         super.init(window: window)
@@ -87,68 +88,81 @@ private struct HistoryListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            topChrome
+            header
+            Divider()
 
-            HStack(alignment: .top, spacing: 18) {
-                historyColumn
-                previewColumn
+            if store.items.isEmpty {
+                emptyState(
+                    icon: "clock.arrow.circlepath",
+                    title: "History is empty",
+                    detail: "Copied text, images, and files will appear here."
+                )
+            } else if filteredItems.isEmpty {
+                VStack(spacing: 16) {
+                    emptyStateContent(
+                        icon: "magnifyingglass",
+                        title: "No matching items",
+                        detail: "Try another search."
+                    )
+                    Button("Clear Search") {
+                        state.searchText = ""
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(32)
+            } else {
+                HStack(spacing: 0) {
+                    historyColumn
+                        .frame(width: 360)
+                    Divider()
+                    previewColumn
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 20)
         }
-        .frame(minWidth: 1020, minHeight: 720)
-        .background(windowBackground)
+        .frame(minWidth: 860, minHeight: 560)
+        .background(Color(nsColor: .windowBackgroundColor))
         .onAppear(perform: syncSelection)
         .onChange(of: visibleItemIDs) { _ in
             syncSelection()
         }
-        .animation(.spring(response: 0.24, dampingFraction: 0.9), value: state.selectedItemID)
-        .animation(.easeInOut(duration: 0.18), value: normalizedQuery)
-        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: collapsedSectionIDs)
     }
 
-    private var topChrome: some View {
-        VStack(spacing: 16) {
-            HStack(alignment: .bottom, spacing: 16) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Clipboard History")
-                        .font(.system(size: 30, weight: .semibold, design: .rounded))
+    private var header: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 10) {
+                Text("Clipboard History")
+                    .font(.system(size: 20, weight: .semibold))
 
-                    Text(subtitleText)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.secondary)
-                }
+                Text(countLabel)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
 
-                Spacer()
+                Spacer(minLength: 16)
 
                 autoCleanMenu
 
-                Button("Clear") {
+                Button("Clear History", role: .destructive) {
                     appController.clearHistory()
                 }
                 .disabled(store.items.isEmpty)
             }
 
-            HStack(spacing: 12) {
-                searchBar
-
-                statsPill(title: "Pinned", value: pinnedItems.count, tint: .blue, isAccent: true)
-                statsPill(title: "Visible", value: filteredItems.count, tint: .primary, isAccent: false)
-            }
+            searchBar
         }
         .padding(.horizontal, 20)
-        .padding(.top, 18)
-        .padding(.bottom, 18)
+        .padding(.vertical, 14)
     }
 
     private var searchBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
 
-            TextField("Search text, screenshots, dates…", text: $state.searchText)
+            TextField("Search text, images, files, or dates", text: $state.searchText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 14))
+                .font(.system(size: 13))
+                .accessibilityLabel("Search clipboard history")
 
             if state.searchText.isEmpty == false {
                 Button {
@@ -158,17 +172,16 @@ private struct HistoryListView: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+                .help("Clear search")
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(.regularMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                )
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(ClipboardUIStyle.contentBackground, in: RoundedRectangle(cornerRadius: 7))
+        .overlay(
+            RoundedRectangle(cornerRadius: 7)
+                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
         )
     }
 
@@ -198,156 +211,83 @@ private struct HistoryListView: View {
 
             Text("Pinned items are kept")
         } label: {
-            Label(autoCleanLabel, systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
-                .font(.system(size: 12, weight: .medium))
+            Label(autoCleanLabel, systemImage: "clock.arrow.circlepath")
+                .font(.system(size: 12))
                 .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(Color.white.opacity(0.08))
-                )
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-    }
-
-    private func statsPill(title: String, value: Int, tint: Color, isAccent: Bool) -> some View {
-        HStack(spacing: 8) {
-            Text(title)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(isAccent ? tint.opacity(0.9) : .secondary)
-
-            Text("\(value)")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isAccent ? tint : .primary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(
-            Capsule(style: .continuous)
-                .fill(isAccent ? tint.opacity(0.12) : Color.white.opacity(0.08))
-        )
-        .overlay(
-            Capsule(style: .continuous)
-                .strokeBorder(isAccent ? tint.opacity(0.18) : Color.white.opacity(0.08), lineWidth: 1)
-        )
+        .accessibilityLabel("History retention")
+        .help("Choose automatic cleanup or delete expired items")
     }
 
     private var historyColumn: some View {
-        PanelSurface {
-            if store.items.isEmpty {
-                emptyState(
-                    icon: "clock.arrow.circlepath",
-                    title: "History is empty",
-                    detail: "Everything you copy in Stackboard will appear here."
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if filteredItems.isEmpty {
-                emptyState(
-                    icon: "magnifyingglass",
-                    title: "Nothing matched your search",
-                    detail: "Try another word or clear the search field."
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 16) {
-                        ForEach(sections) { section in
-                            VStack(alignment: .leading, spacing: 10) {
-                                HistorySectionHeader(
-                                    title: section.title,
-                                    count: section.items.count,
-                                    isPinnedSection: section.isPinnedSection,
-                                    isCollapsed: collapsedSectionIDs.contains(section.id)
-                                ) {
-                                    toggleSection(section.id)
-                                }
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 8) {
+                ForEach(sections) { section in
+                    VStack(spacing: 2) {
+                        HistorySectionHeader(
+                            title: section.title,
+                            count: section.items.count,
+                            isPinnedSection: section.isPinnedSection,
+                            isCollapsed: collapsedSectionIDs.contains(section.id)
+                        ) {
+                            toggleSection(section.id)
+                        }
 
-                                if collapsedSectionIDs.contains(section.id) == false {
-                                    VStack(spacing: 12) {
-                                        ForEach(section.items) { item in
-                                            HistoryRow(
-                                                item: item,
-                                                image: store.thumbnail(for: item, maxDimension: 96),
-                                                query: normalizedQuery,
-                                                isPinned: store.isPinned(item),
-                                                isSelected: state.selectedItemID == item.id,
-                                                canCopy: item.kind != .file || item.fileExists,
-                                                onSelect: {
-                                                    state.selectedItemID = item.id
-                                                },
-                                                onCopy: {
-                                                    state.selectedItemID = item.id
-                                                    appController.copyToClipboard(item)
-                                                },
-                                                onTogglePin: {
-                                                    state.selectedItemID = item.id
-                                                    appController.togglePinnedHistoryItem(item)
-                                                },
-                                                onDelete: {
-                                                    if state.selectedItemID == item.id {
-                                                        state.selectedItemID = nil
-                                                    }
-                                                    appController.deleteHistoryItem(item)
-                                                }
-                                            )
-                                        }
+                        if collapsedSectionIDs.contains(section.id) == false {
+                            ForEach(section.items) { item in
+                                HistoryRow(
+                                    item: item,
+                                    image: store.thumbnail(for: item, maxDimension: 80),
+                                    query: normalizedQuery,
+                                    isPinned: store.isPinned(item),
+                                    isSelected: state.selectedItemID == item.id,
+                                    onSelect: {
+                                        state.selectedItemID = item.id
+                                    },
+                                    onCopy: {
+                                        state.selectedItemID = item.id
+                                        appController.copyToClipboard(item)
+                                    },
+                                    onTogglePin: {
+                                        togglePin(item)
+                                    },
+                                    onDelete: {
+                                        delete(item)
                                     }
-                                    .transition(
-                                        .asymmetric(
-                                            insertion: .opacity.combined(with: .scale(scale: 0.985, anchor: .top)),
-                                            removal: .opacity.combined(with: .scale(scale: 0.98, anchor: .top))
-                                        )
-                                    )
-                                }
+                                )
                             }
                         }
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 20)
                 }
             }
+            .padding(8)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxHeight: .infinity)
+        .background(Color(nsColor: .controlBackgroundColor))
     }
 
+    @ViewBuilder
     private var previewColumn: some View {
-        HistoryPreviewPane(
-            item: selectedItem,
-            image: selectedItem.flatMap { store.image(for: $0) },
-            query: normalizedQuery,
-            isPinned: selectedItem.map(store.isPinned) ?? false,
-            hasItems: store.items.isEmpty == false
-        )
-        .frame(width: 336)
-    }
-
-    private var windowBackground: some View {
-        ZStack {
-            LinearGradient(
-                colors: [
-                    Color(nsColor: .windowBackgroundColor),
-                    Color(nsColor: .underPageBackgroundColor),
-                    Color(nsColor: .controlBackgroundColor).opacity(0.7)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+        if let item = selectedItem {
+            HistoryPreviewPane(
+                item: item,
+                image: item.kind == .image ? store.image(for: item) : nil,
+                query: normalizedQuery,
+                isPinned: store.isPinned(item),
+                onCopy: {
+                    appController.copyToClipboard(item)
+                },
+                onTogglePin: {
+                    togglePin(item)
+                },
+                onDelete: {
+                    delete(item)
+                }
             )
-
-            Circle()
-                .fill(Color.white.opacity(0.11))
-                .frame(width: 340, height: 340)
-                .blur(radius: 80)
-                .offset(x: -220, y: -180)
-
-            Circle()
-                .fill(Color.blue.opacity(0.10))
-                .frame(width: 320, height: 320)
-                .blur(radius: 72)
-                .offset(x: 260, y: 120)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .ignoresSafeArea()
     }
 
     private var normalizedQuery: String {
@@ -364,15 +304,10 @@ private struct HistoryListView: View {
         }
     }
 
-    private var pinnedItems: [ClipboardHistoryItem] {
-        filteredItems.filter(store.isPinned)
-    }
-
-    private var unpinnedItems: [ClipboardHistoryItem] {
-        filteredItems.filter { store.isPinned($0) == false }
-    }
-
     private var sections: [HistorySection] {
+        let items = filteredItems
+        let pinnedItems = items.filter(store.isPinned)
+        let unpinnedItems = items.filter { store.isPinned($0) == false }
         var result: [HistorySection] = []
 
         if pinnedItems.isEmpty == false {
@@ -391,47 +326,37 @@ private struct HistoryListView: View {
             calendar.startOfDay(for: item.createdAt)
         }
 
-        let daySections = grouped
-            .keys
-            .sorted(by: >)
-            .map { day in
-                HistorySection(
-                    id: "day-\(day.timeIntervalSince1970)",
-                    title: sectionTitle(for: day, calendar: calendar),
-                    items: grouped[day] ?? [],
-                    isPinnedSection: false
-                )
-            }
-
-        result.append(contentsOf: daySections)
+        result.append(contentsOf: grouped.keys.sorted(by: >).map { day in
+            HistorySection(
+                id: daySectionID(for: day, calendar: calendar),
+                title: sectionTitle(for: day, calendar: calendar),
+                items: grouped[day] ?? [],
+                isPinnedSection: false
+            )
+        })
         return result
     }
 
     private var visibleItemIDs: [UUID] {
-        filteredItems.map(\.id)
+        sections.flatMap { $0.items.map(\.id) }
     }
 
     private var selectedItem: ClipboardHistoryItem? {
-        guard let selectedItemID = state.selectedItemID else {
-            return nil
+        let items = filteredItems
+        if let selectedItemID = state.selectedItemID,
+           let selected = items.first(where: { $0.id == selectedItemID }) {
+            return selected
         }
 
-        return store.item(for: selectedItemID)
+        return sections.first?.items.first
     }
 
-    private var subtitleText: String {
-        let total = filteredItems.count
-        let pinned = pinnedItems.count
-
+    private var countLabel: String {
+        let count = filteredItems.count
         if normalizedQuery.isEmpty {
-            return pinned > 0
-                ? "\(total) items, \(pinned) pinned and ready to browse"
-                : "\(total) items ready to browse"
+            return "\(count) \(count == 1 ? "item" : "items")"
         }
-
-        return pinned > 0
-            ? "\(total) matches, including \(pinned) pinned"
-            : "\(total) matches"
+        return "\(count) \(count == 1 ? "match" : "matches")"
     }
 
     private var autoCleanLabel: String {
@@ -440,7 +365,7 @@ private struct HistoryListView: View {
         }
 
         if expiredItemCount > 0 {
-            return "Auto-Clean \(store.retentionPolicy.shortLabel) • \(expiredItemCount) old"
+            return "Auto-Clean \(store.retentionPolicy.shortLabel) · \(expiredItemCount) old"
         }
 
         return "Auto-Clean \(store.retentionPolicy.shortLabel)"
@@ -451,21 +376,41 @@ private struct HistoryListView: View {
     }
 
     private func syncSelection() {
-        if let selectedItemID = state.selectedItemID, visibleItemIDs.contains(selectedItemID) {
+        let ids = visibleItemIDs
+        if let selectedItemID = state.selectedItemID, ids.contains(selectedItemID) {
             return
         }
 
-        state.selectedItemID = visibleItemIDs.first
+        state.selectedItemID = ids.first
+    }
+
+    private func togglePin(_ item: ClipboardHistoryItem) {
+        state.selectedItemID = item.id
+        appController.togglePinnedHistoryItem(item)
+        let sectionID = store.isPinned(item)
+            ? "pinned"
+            : daySectionID(for: item.createdAt, calendar: .current)
+        collapsedSectionIDs.remove(sectionID)
+    }
+
+    private func delete(_ item: ClipboardHistoryItem) {
+        if state.selectedItemID == item.id {
+            state.selectedItemID = nil
+        }
+        appController.deleteHistoryItem(item)
+        syncSelection()
     }
 
     private func toggleSection(_ sectionID: String) {
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
-            if collapsedSectionIDs.contains(sectionID) {
-                collapsedSectionIDs.remove(sectionID)
-            } else {
-                collapsedSectionIDs.insert(sectionID)
-            }
+        if collapsedSectionIDs.contains(sectionID) {
+            collapsedSectionIDs.remove(sectionID)
+        } else {
+            collapsedSectionIDs.insert(sectionID)
         }
+    }
+
+    private func daySectionID(for date: Date, calendar: Calendar) -> String {
+        "day-\(calendar.startOfDay(for: date).timeIntervalSince1970)"
     }
 
     private func sectionTitle(for date: Date, calendar: Calendar) -> String {
@@ -484,21 +429,23 @@ private struct HistoryListView: View {
     }
 
     private func emptyState(icon: String, title: String, detail: String) -> some View {
-        VStack(spacing: 14) {
+        emptyStateContent(icon: icon, title: title, detail: detail)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(32)
+    }
+
+    private func emptyStateContent(icon: String, title: String, detail: String) -> some View {
+        VStack(spacing: 10) {
             Image(systemName: icon)
-                .font(.system(size: 42))
+                .font(.system(size: 30))
                 .foregroundStyle(.secondary)
-
             Text(title)
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(.primary)
-
+                .font(.system(size: 18, weight: .semibold))
             Text(detail)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
         }
         .multilineTextAlignment(.center)
-        .padding(40)
     }
 }
 
@@ -507,25 +454,6 @@ private struct HistorySection: Identifiable {
     let title: String
     let items: [ClipboardHistoryItem]
     let isPinnedSection: Bool
-}
-
-private struct PanelSurface<Content: View>: View {
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.12), radius: 22, y: 12)
-
-            content()
-                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-        }
-    }
 }
 
 private struct HistorySectionHeader: View {
@@ -537,46 +465,30 @@ private struct HistorySectionHeader: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: 7) {
                 Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(isPinnedSection ? Color.blue : .secondary)
+                    .font(.system(size: 9, weight: .semibold))
+                    .frame(width: 10)
 
                 if isPinnedSection {
                     Image(systemName: "pin.fill")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.blue)
+                        .font(.system(size: 10))
                 }
 
                 Text(title)
                     .font(.system(size: 12, weight: .semibold))
-                    .textCase(.uppercase)
-                    .foregroundStyle(isPinnedSection ? Color.blue : .secondary)
-
-                Text("\(count)")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(isPinnedSection ? Color.blue : .secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(isPinnedSection ? Color.blue.opacity(0.14) : Color.white.opacity(0.08))
-                    )
-
                 Spacer()
+                Text("\(count)")
+                    .font(.system(size: 11))
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(isPinnedSection ? Color.blue.opacity(0.10) : Color.white.opacity(0.05))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .strokeBorder(isPinnedSection ? Color.blue.opacity(0.20) : Color.white.opacity(0.06), lineWidth: 1)
-                    )
-            )
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(count) items")
+        .accessibilityValue(isCollapsed ? "Collapsed" : "Expanded")
     }
 }
 
@@ -586,7 +498,6 @@ private struct HistoryRow: View {
     let query: String
     let isPinned: Bool
     let isSelected: Bool
-    let canCopy: Bool
     let onSelect: () -> Void
     let onCopy: () -> Void
     let onTogglePin: () -> Void
@@ -595,421 +506,182 @@ private struct HistoryRow: View {
     @State private var isHovering = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            preview
+        Button(action: onSelect) {
+            HStack(spacing: 10) {
+                ClipboardItemThumbnail(item: item, image: image, size: 38)
+                    .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .center, spacing: 8) {
-                    HighlightedText(text: item.menuTitle, query: query)
-                        .font(.system(size: 15, weight: .semibold))
+                VStack(alignment: .leading, spacing: 4) {
+                    HighlightedText(text: contentText, query: query)
+                        .font(.system(size: 13))
                         .foregroundStyle(.primary)
                         .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                    if isPinned {
-                        Image(systemName: "pin.fill")
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(Color.blue)
-                    }
-
-                    Spacer(minLength: 0)
-
-                    kindBadge
+                    HighlightedText(text: item.detailText, query: query)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
 
-                HighlightedText(text: item.detailText, query: query)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                if item.kind == .text, let textValue = item.textValue {
-                    HighlightedText(text: textValue, query: query)
-                        .font(.system(size: 13))
+                if isPinned {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 10))
                         .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                } else if item.kind == .file {
-                    HighlightedText(
-                        text: item.filePath ?? "File path is unavailable.",
-                        query: query
-                    )
-                    .font(.system(size: 13))
-                    .foregroundStyle(item.fileExists ? Color.secondary : Color.orange)
-                    .lineLimit(2)
-                } else {
-                    HighlightedText(
-                        text: isSelected ? "Selected. Preview is shown on the right." : "Click to select and preview on the right.",
-                        query: query
-                    )
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                        .accessibilityLabel("Pinned")
                 }
             }
-
-            Spacer(minLength: 0)
-
-            HistoryRowActions(
-                canCopy: canCopy,
-                isPinned: isPinned,
-                onCopy: onCopy,
-                onTogglePin: onTogglePin,
-                onDelete: onDelete
-            )
-            .frame(width: 114, alignment: .trailing)
-            .opacity(isHovering || isSelected ? 1 : 0.001)
-            .allowsHitTesting(isHovering || isSelected)
-        }
-        .padding(16)
-        .background(cardBackground)
-        .overlay(cardOutline)
-        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .onTapGesture(perform: onSelect)
-        .onHover { hovering in
-            isHovering = hovering
-        }
-        .animation(.easeOut(duration: 0.18), value: isHovering || isSelected)
-    }
-
-    private var cardBackground: some View {
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
-            .fill(cardFillColor)
-            .shadow(color: .black.opacity(isSelected ? 0.12 : 0.06), radius: isSelected ? 18 : 10, y: 8)
-    }
-
-    private var cardOutline: some View {
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
-            .strokeBorder(cardStrokeColor, lineWidth: isSelected ? 1.2 : 1)
-    }
-
-    private var cardFillColor: Color {
-        if isSelected {
-            return Color.accentColor.opacity(0.11)
-        }
-
-        if isPinned {
-            return Color.blue.opacity(0.08)
-        }
-
-        return Color.white.opacity(0.06)
-    }
-
-    private var cardStrokeColor: Color {
-        if isSelected {
-            return Color.accentColor.opacity(0.35)
-        }
-
-        if isPinned {
-            return Color.blue.opacity(0.22)
-        }
-
-        return Color.white.opacity(0.12)
-    }
-
-    @ViewBuilder
-    private var preview: some View {
-        if let image {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 92, height: 92)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
-                )
-        } else {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.secondary.opacity(0.12))
-                .overlay(
-                    Image(systemName: previewSystemImage)
-                        .font(.system(size: 28))
-                        .foregroundStyle(previewTint)
-                )
-                .frame(width: 92, height: 92)
-        }
-    }
-
-    private var kindBadge: some View {
-        Text(item.kindTitle)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundStyle(item.kind == .file && item.fileExists == false ? Color.orange : Color.secondary)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity)
+            .frame(height: 72)
             .background(
-                Capsule(style: .continuous)
-                    .fill(Color.primary.opacity(0.07))
+                isSelected
+                    ? ClipboardUIStyle.selectionFill
+                    : Color.primary.opacity(isHovering ? 0.035 : 0),
+                in: RoundedRectangle(cornerRadius: 8)
             )
-    }
-
-    private var previewSystemImage: String {
-        switch item.kind {
-        case .text:
-            return "doc.text"
-        case .image:
-            return "photo"
-        case .file:
-            return item.fileExists ? "doc" : "exclamationmark.triangle"
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(isSelected ? "Selected" : "")
+        .onHover { isHovering = $0 }
+        .contextMenu {
+            Button("Copy Again", action: onCopy)
+                .disabled(item.kind == .file && item.fileExists == false)
+            Button(isPinned ? "Unpin" : "Pin", action: onTogglePin)
+            Divider()
+            Button("Delete", role: .destructive, action: onDelete)
         }
     }
 
-    private var previewTint: Color {
-        if item.kind == .file && item.fileExists == false {
-            return .orange
+    private var contentText: String {
+        if item.kind == .text {
+            return item.textValue.flatMap { $0.isEmpty ? nil : $0 } ?? "Empty text clip"
         }
-
-        return .secondary
+        if item.kind == .image {
+            return "Screenshot"
+        }
+        return item.menuTitle
     }
 }
 
-private struct HistoryRowActions: View {
-    let canCopy: Bool
+private struct HistoryPreviewPane: View {
+    let item: ClipboardHistoryItem
+    let image: NSImage?
+    let query: String
     let isPinned: Bool
     let onCopy: () -> Void
     let onTogglePin: () -> Void
     let onDelete: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            HistoryRowActionButton(
-                systemImage: "doc.on.doc",
-                label: "Copy Again",
-                isEnabled: canCopy,
-                action: onCopy
-            )
-
-            HistoryRowActionButton(
-                systemImage: isPinned ? "pin.slash" : "pin",
-                label: isPinned ? "Unpin" : "Pin",
-                tint: isPinned ? .blue : .primary,
-                action: onTogglePin
-            )
-
-            HistoryRowActionButton(
-                systemImage: "trash",
-                label: "Delete",
-                tint: .red,
-                action: onDelete
-            )
-        }
-    }
-}
-
-private struct HistoryRowActionButton: View {
-    let systemImage: String
-    let label: String
-    var tint: Color = .primary
-    var isEnabled: Bool = true
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isEnabled ? tint : .secondary)
-                .frame(width: 30, height: 30)
-                .background(
-                    Circle()
-                        .fill(Color.white.opacity(isEnabled ? 0.13 : 0.07))
-                )
-        }
-        .buttonStyle(.plain)
-        .disabled(isEnabled == false)
-        .help(label)
-    }
-}
-
-private struct HistoryPreviewPane: View {
-    let item: ClipboardHistoryItem?
-    let image: NSImage?
-    let query: String
-    let isPinned: Bool
-    let hasItems: Bool
-
-    var body: some View {
-        PanelSurface {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Text("Preview")
-                        .font(.system(size: 18, weight: .semibold))
-                    Spacer()
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Button(action: onCopy) {
+                    Label("Copy Again", systemImage: "doc.on.doc")
                 }
+                .buttonStyle(.borderedProminent)
+                .tint(ClipboardUIStyle.accent)
+                .disabled(item.kind == .file && item.fileExists == false)
 
-                if let item {
-                    previewBody(for: item)
-                } else {
-                    emptyPreview
+                Button(action: onTogglePin) {
+                    Label(isPinned ? "Unpin" : "Pin", systemImage: isPinned ? "pin.slash" : "pin")
                 }
+                .buttonStyle(.bordered)
 
+                Spacer(minLength: 8)
+
+                Button(role: .destructive, action: onDelete) {
+                    Label("Delete", systemImage: "trash")
+                }
+                .buttonStyle(.borderless)
+            }
+            .controlSize(.regular)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+
+            Divider()
+
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .id(item.id)
+
+            Divider()
+
+            HStack(spacing: 6) {
+                if item.kind == .text {
+                    Text(item.kindTitle)
+                    Text("·")
+                }
+                HighlightedText(text: item.detailText, query: query)
                 Spacer(minLength: 0)
             }
-            .padding(20)
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
         }
-        .animation(.easeInOut(duration: 0.2), value: item?.id)
+        .background(ClipboardUIStyle.contentBackground)
     }
 
     @ViewBuilder
-    private func previewBody(for item: ClipboardHistoryItem) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 8) {
-                Text(item.kindTitle)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(item.kind == .file && item.fileExists == false ? Color.orange : Color.secondary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(Color.white.opacity(0.08))
-                    )
-
-                if isPinned {
-                    Text("Pinned")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(Color.blue)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(Color.blue.opacity(0.12))
-                        )
-                }
+    private var content: some View {
+        switch item.kind {
+        case .text:
+            ScrollView {
+                Text(makeHighlightedAttributedString(item.textValue ?? "", query: query))
+                    .font(.system(size: 14))
+                    .lineSpacing(3)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(20)
             }
-
-            Text(item.menuTitle)
-                .font(.system(size: 20, weight: .semibold))
-                .lineLimit(3)
-
-            Text(item.detailText)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.secondary)
-
-            if item.kind == .image, let image {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.black.opacity(0.94),
-                                    Color.black.opacity(0.82)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-
+        case .image:
+            GeometryReader { geometry in
+                if let image {
                     Image(nsImage: image)
                         .resizable()
                         .scaledToFit()
-                        .frame(maxWidth: .infinity, maxHeight: 280)
-                        .padding(18)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                } else {
+                    VStack(spacing: 10) {
+                        Image(systemName: "photo")
+                            .font(.system(size: 30))
+                        Text("Image unavailable")
+                            .font(.system(size: 13))
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(width: geometry.size.width, height: geometry.size.height)
                 }
-                .frame(maxWidth: .infinity, minHeight: 280, maxHeight: 300)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
-                )
-            } else if item.kind == .file {
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 12) {
-                        Image(systemName: item.fileExists ? "doc" : "exclamationmark.triangle")
-                            .font(.system(size: 28, weight: .semibold))
-                            .foregroundStyle(item.fileExists ? Color.secondary : Color.orange)
-                            .frame(width: 44, height: 44)
-                            .background(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill(Color.white.opacity(0.08))
-                            )
+            }
+            .padding(20)
+        case .file:
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text(item.menuTitle)
+                        .font(.system(size: 18, weight: .semibold))
+                        .textSelection(.enabled)
 
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(item.fileExists ? "File is available" : "File was removed")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(item.fileExists ? Color.primary : Color.orange)
+                    Label(
+                        item.fileExists ? "File is available" : "File is missing",
+                        systemImage: item.fileExists ? "checkmark.circle" : "exclamationmark.triangle"
+                    )
+                    .font(.system(size: 13))
+                    .foregroundStyle(item.fileExists ? Color.secondary : Color.orange)
 
-                            Text(
-                                item.fileExists
-                                    ? "Stackboard keeps only the original path and sends that file back to the clipboard."
-                                    : "Stackboard stored only the path. The file no longer exists there, so it can't be copied back."
-                            )
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("File path")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-
-                    ScrollView {
                         Text(makeHighlightedAttributedString(item.filePath ?? "Path unavailable", query: query))
                             .font(.system(size: 13))
-                            .foregroundStyle(.primary)
                             .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(16)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 160, maxHeight: 220)
-                    .background(
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .fill(Color.white.opacity(0.06))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                    .strokeBorder(
-                                        item.fileExists ? Color.white.opacity(0.08) : Color.orange.opacity(0.22),
-                                        lineWidth: 1
-                                    )
-                            )
-                    )
                 }
-            } else if let textValue = item.textValue {
-                ScrollView {
-                    Text(makeHighlightedAttributedString(textValue, query: query))
-                        .font(.system(size: 14))
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(16)
-                }
-                .frame(maxWidth: .infinity, minHeight: 280, maxHeight: 340)
-                .background(
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1)
-                        )
-                )
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
             }
-
-            Text("Selecting a card only updates this preview. Use the copy button on the row to send it back to the clipboard.")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
-    }
-
-    private var emptyPreview: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.white.opacity(0.06))
-                .overlay(
-                    VStack(spacing: 12) {
-                        Image(systemName: hasItems ? "sidebar.right" : "rectangle.on.rectangle.slash")
-                            .font(.system(size: 34))
-                            .foregroundStyle(.secondary)
-
-                        Text(hasItems ? "Choose any item" : "No preview yet")
-                            .font(.system(size: 18, weight: .semibold))
-                            .foregroundStyle(.primary)
-
-                        Text(
-                            hasItems
-                                ? "Click a card on the left to render its preview here."
-                                : "Copy something or take a screenshot, then it will appear here."
-                        )
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    }
-                    .padding(24)
-                )
-                .frame(maxWidth: .infinity, minHeight: 300)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 }
 

@@ -7,6 +7,7 @@ enum EditorTool: String, CaseIterable, Identifiable {
     case pen
     case eraser
     case arrow
+    case line
     case rectangle
     case ellipse
     case blur
@@ -20,6 +21,7 @@ enum EditorTool: String, CaseIterable, Identifiable {
         case .pen: return "pencil.tip"
         case .eraser: return "eraser"
         case .arrow: return "arrow.up.right"
+        case .line: return "line.diagonal"
         case .rectangle: return "rectangle"
         case .ellipse: return "oval"
         case .blur: return "drop.fill"
@@ -147,6 +149,14 @@ struct EditorArrow: Equatable {
     var lineWidth: CGFloat
 }
 
+struct EditorLine: Equatable {
+    var id = UUID()
+    var start: CGPoint
+    var end: CGPoint
+    var color: EditorColor
+    var lineWidth: CGFloat
+}
+
 enum EditorShapeKind: Equatable {
     case rectangle
     case ellipse
@@ -201,6 +211,7 @@ enum EditorAnnotation: Identifiable, Equatable {
     case stroke(EditorStroke)
     case eraser(EditorEraserStroke)
     case arrow(EditorArrow)
+    case line(EditorLine)
     case shape(EditorShape)
     case blur(EditorBlur)
     case text(EditorTextAnnotation)
@@ -210,6 +221,7 @@ enum EditorAnnotation: Identifiable, Equatable {
         case let .stroke(stroke): return stroke.id
         case let .eraser(eraser): return eraser.id
         case let .arrow(arrow): return arrow.id
+        case let .line(line): return line.id
         case let .shape(shape): return shape.id
         case let .blur(blur): return blur.id
         case let .text(text): return text.id
@@ -220,6 +232,7 @@ enum EditorAnnotation: Identifiable, Equatable {
 enum EditableAnnotationKind: Equatable {
     case stroke
     case arrow
+    case line
     case shape
     case blur
     case text
@@ -256,6 +269,7 @@ private enum EditorCanvasInteractionState {
     case moving(original: EditorAnnotation, pointer: CGPoint, bounds: CGRect)
     case resizing(original: EditorAnnotation, bounds: CGRect, pointer: CGPoint)
     case resizingArrow(original: EditorArrow, isStart: Bool, pointer: CGPoint)
+    case resizingLine(original: EditorLine, isStart: Bool, pointer: CGPoint)
 }
 
 private struct EditorChangeBaseline {
@@ -367,6 +381,7 @@ final class EditorDocument: ObservableObject {
     @Published private(set) var activeStroke: EditorStroke?
     @Published private(set) var activeEraser: EditorEraserStroke?
     @Published private(set) var activeArrow: EditorArrow?
+    @Published private(set) var activeLine: EditorLine?
     @Published private(set) var activeShape: EditorShape?
     @Published private(set) var activeBlur: EditorBlur? {
         didSet {
@@ -516,6 +531,9 @@ final class EditorDocument: ObservableObject {
         case .arrow:
             activeArrow = EditorArrow(start: point, end: point, color: selectedColor, lineWidth: lineWidth)
             interactionState = .drawing(anchor: point)
+        case .line:
+            activeLine = EditorLine(start: point, end: point, color: selectedColor, lineWidth: lineWidth)
+            interactionState = .drawing(anchor: point)
         case .rectangle, .ellipse:
             let anchor = clamped(point: point)
             activeShape = EditorShape(
@@ -580,6 +598,13 @@ final class EditorDocument: ObservableObject {
             var arrow = original
             if isStart { arrow.start = destination } else { arrow.end = destination }
             replaceLiveAnnotation(.arrow(arrow))
+        case let .resizingLine(original, isStart, pointer):
+            let initial = isStart ? original.start : original.end
+            let destination = point == pointer ? initial :
+                clamped(point: CGPoint(x: initial.x + point.x - pointer.x, y: initial.y + point.y - pointer.y))
+            var line = original
+            if isStart { line.start = destination } else { line.end = destination }
+            replaceLiveAnnotation(.line(line))
         case .none:
             break
         }
@@ -607,7 +632,7 @@ final class EditorDocument: ObservableObject {
                 insertAnnotation(.shape(activeShape), name: "Shape")
             }
             activeShape = nil
-        case .moving, .resizing, .resizingArrow:
+        case .moving, .resizing, .resizingArrow, .resizingLine:
             updateInteraction(at: point, constrainProportions: constrainProportions)
             if let baseline = interactionBaseline {
                 finishChange(baseline, name: isMovingInteraction ? "Move" : "Resize")
@@ -947,6 +972,8 @@ final class EditorDocument: ObservableObject {
                 drawEraser(eraser)
             case let .arrow(arrow):
                 drawArrow(arrow)
+            case let .line(line):
+                drawLine(line)
             case let .shape(shape):
                 drawShape(shape)
             case let .blur(blur):
@@ -985,6 +1012,9 @@ final class EditorDocument: ObservableObject {
         }
         if let activeArrow {
             result.append(.arrow(activeArrow))
+        }
+        if let activeLine {
+            result.append(.line(activeLine))
         }
         if let activeShape {
             result.append(.shape(activeShape))
@@ -1042,6 +1072,13 @@ final class EditorDocument: ObservableObject {
                 secondaryHandleRect: handleRect(center: arrow.start)
             )
         }
+        if case let .line(line) = annotation {
+            return EditorSelectionOverlay(
+                kind: .line, rect: rect,
+                handleRect: handleRect(center: line.end),
+                secondaryHandleRect: handleRect(center: line.start)
+            )
+        }
         return EditorSelectionOverlay(
             kind: selection.kind, rect: rect,
             handleRect: selection.kind == .text ? textResizeHandleRect(for: rect) : resizeHandleRect(for: rect)
@@ -1082,6 +1119,10 @@ final class EditorDocument: ObservableObject {
             guard var activeArrow else { return }
             activeArrow.end = point
             self.activeArrow = activeArrow
+        case .line:
+            guard var activeLine else { return }
+            activeLine.end = point
+            self.activeLine = activeLine
         case .blur:
             guard var activeBlur else { return }
             activeBlur.rect = normalizedRect(from: anchor, to: clamped(point: point))
@@ -1128,6 +1169,11 @@ final class EditorDocument: ObservableObject {
                 insertAnnotation(.arrow(activeArrow), name: "Arrow")
             }
             activeArrow = nil
+        case .line:
+            if let activeLine, hypot(activeLine.end.x - activeLine.start.x, activeLine.end.y - activeLine.start.y) > 6 {
+                insertAnnotation(.line(activeLine), name: "Line")
+            }
+            activeLine = nil
         case .blur:
             if let activeBlur, activeBlur.rect.width > 10, activeBlur.rect.height > 10 {
                 insertAnnotation(.blur(activeBlur), name: "Blur", selecting: true)
@@ -1163,7 +1209,7 @@ final class EditorDocument: ObservableObject {
         case let .text(text):
             textFont = text.font
             textFontSize = Double(text.fontSize)
-        case .stroke, .arrow, .eraser:
+        case .stroke, .arrow, .line, .eraser:
             break
         }
     }
@@ -1199,6 +1245,10 @@ final class EditorDocument: ObservableObject {
             let startDistance = hypot(point.x - arrow.start.x, point.y - arrow.start.y)
             let endDistance = hypot(point.x - arrow.end.x, point.y - arrow.end.y)
             interactionState = .resizingArrow(original: arrow, isStart: startDistance < endDistance, pointer: point)
+        } else if case let .line(line) = baseline.annotation {
+            let startDistance = hypot(point.x - line.start.x, point.y - line.start.y)
+            let endDistance = hypot(point.x - line.end.x, point.y - line.end.y)
+            interactionState = .resizingLine(original: line, isStart: startDistance < endDistance, pointer: point)
         } else {
             interactionState = .resizing(original: baseline.annotation, bounds: annotationBounds(baseline.annotation), pointer: point)
         }
@@ -1261,6 +1311,7 @@ final class EditorDocument: ObservableObject {
         activeStroke = nil
         activeEraser = nil
         activeArrow = nil
+        activeLine = nil
         activeShape = nil
         activeBlur = nil
         interactionBaseline = nil
@@ -1505,6 +1556,20 @@ final class EditorDocument: ObservableObject {
         context.setLineWidth(arrow.lineWidth)
         context.setLineCap(.round)
         context.setLineJoin(.round)
+        context.strokePath()
+    }
+
+    private func drawLine(_ line: EditorLine) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.translateBy(x: 0, y: pixelSize.height)
+        context.scaleBy(x: 1, y: -1)
+        context.move(to: line.start)
+        context.addLine(to: line.end)
+        context.setStrokeColor(line.color.nsColor.cgColor)
+        context.setLineWidth(line.lineWidth)
+        context.setLineCap(.round)
         context.strokePath()
     }
 

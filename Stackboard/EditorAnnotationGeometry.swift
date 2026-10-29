@@ -20,6 +20,14 @@ enum EditorAnnotationGeometry {
                 x: minX - radius, y: minY - radius,
                 width: maxX - minX + radius * 2, height: maxY - minY + radius * 2
             )
+        case let .line(line):
+            let radius = max(line.lineWidth, 0) / 2
+            return CGRect(
+                x: min(line.start.x, line.end.x) - radius,
+                y: min(line.start.y, line.end.y) - radius,
+                width: abs(line.end.x - line.start.x) + radius * 2,
+                height: abs(line.end.y - line.start.y) + radius * 2
+            )
         case let .shape(shape):
             switch shape.style {
             case .filled:
@@ -70,6 +78,11 @@ enum EditorAnnotationGeometry {
             return segmentContains(point, from: arrow.start, to: arrow.end, radius: radius)
                 || segmentContains(point, from: arrow.end, to: head.left, radius: radius)
                 || segmentContains(point, from: arrow.end, to: head.right, radius: radius)
+        case let .line(line):
+            return segmentContains(
+                point, from: line.start, to: line.end,
+                radius: max(line.lineWidth, 0) / 2 + tolerance
+            )
         case let .shape(shape):
             let path = shape.path
             switch shape.style {
@@ -110,6 +123,10 @@ enum EditorAnnotationGeometry {
             arrow.start = translated(arrow.start, by: delta)
             arrow.end = translated(arrow.end, by: delta)
             return .arrow(arrow)
+        case var .line(line):
+            line.start = translated(line.start, by: delta)
+            line.end = translated(line.end, by: delta)
+            return .line(line)
         case var .shape(shape):
             shape.rect.origin = translated(shape.rect.origin, by: delta)
             return .shape(shape)
@@ -152,6 +169,13 @@ enum EditorAnnotationGeometry {
             arrow.start = mapped(arrow.start, from: sourceCenterline, to: targetCenterline)
             arrow.end = mapped(arrow.end, from: sourceCenterline, to: targetCenterline)
             return .arrow(arrow)
+        case var .line(line):
+            let radius = max(line.lineWidth, 0) / 2
+            let sourceCenterline = insetAllowingCollapse(source, by: radius)
+            let targetCenterline = insetAllowingCollapse(target, by: radius)
+            line.start = mapped(line.start, from: sourceCenterline, to: targetCenterline)
+            line.end = mapped(line.end, from: sourceCenterline, to: targetCenterline)
+            return .line(line)
         case var .shape(shape):
             switch shape.style {
             case .filled:
@@ -182,6 +206,9 @@ enum EditorAnnotationGeometry {
         case var .arrow(arrow):
             arrow.id = id
             return .arrow(arrow)
+        case var .line(line):
+            line.id = id
+            return .line(line)
         case var .shape(shape):
             shape.id = id
             return .shape(shape)
@@ -318,6 +345,7 @@ extension EditorAnnotation {
         case .stroke: return .stroke
         case .eraser: return nil
         case .arrow: return .arrow
+        case .line: return .line
         case .shape: return .shape
         case .blur: return .blur
         case .text: return .text
@@ -328,6 +356,7 @@ extension EditorAnnotation {
         switch self {
         case let .stroke(stroke): return stroke.color
         case let .arrow(arrow): return arrow.color
+        case let .line(line): return line.color
         case let .shape(shape): return shape.color
         case let .text(text): return text.color
         case .eraser, .blur: return nil
@@ -338,6 +367,7 @@ extension EditorAnnotation {
         switch self {
         case let .stroke(stroke): return stroke.lineWidth
         case let .arrow(arrow): return arrow.lineWidth
+        case let .line(line): return line.lineWidth
         case let .shape(shape): return shape.lineWidth
         case .eraser, .blur, .text: return nil
         }
@@ -352,6 +382,9 @@ extension EditorAnnotation {
         case var .arrow(arrow):
             arrow.color = color
             return .arrow(arrow)
+        case var .line(line):
+            line.color = color
+            return .line(line)
         case var .shape(shape):
             shape.color = color
             return .shape(shape)
@@ -372,6 +405,9 @@ extension EditorAnnotation {
         case var .arrow(arrow):
             arrow.lineWidth = width
             return .arrow(arrow)
+        case var .line(line):
+            line.lineWidth = width
+            return .line(line)
         case var .shape(shape):
             shape.lineWidth = width
             return .shape(shape)

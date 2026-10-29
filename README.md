@@ -31,7 +31,7 @@
 
 Point out a UI issue, mark up a design, or show someone exactly where to click.
 
-- **Make your point.** Add arrows, freehand drawings, text, rectangles, and ellipses. Choose your colors, line widths, and fonts.
+- **Make your point.** Add arrows, straight lines, freehand drawings, text, rectangles, and ellipses. Choose your colors, line widths, and fonts.
 - **Keep editing.** Move and resize annotations, edit your text, erase your marks, or undo and redo changes. Each editor window has its own history.
 - **Get the framing right.** Crop after capture without flattening your annotations. Keep the original image resolution when you copy or export.
 - **Start with an existing image.** Open a file or image from the clipboard and use the same editing tools. The source file stays unchanged unless you explicitly save over it.
@@ -41,7 +41,7 @@ Point out a UI issue, mark up a design, or show someone exactly where to click.
 
 That link, snippet, or image you copied is still within reach.
 
-Press **`⌘⇧V`** to open clipboard history. Search your copied text and file references, preview an entry, and choose **Copy Again**. Then paste it wherever you need it with `⌘V`.
+Press **`⌘⇧V`** to open clipboard history. Search the compact list, select an entry to see its full text or image in the preview, and choose **Copy Again**. Then paste it wherever you need it with `⌘V`.
 
 Pin entries you want to keep, choose an automatic cleanup period, or grab one of the eight most recent items straight from the menu bar. History is stored locally on your Mac and survives app restarts, with no cloud sync.
 
@@ -88,7 +88,7 @@ You can open another screenshot without closing the previous editor.
 | Save from the editor | `⌘S` |
 | Undo / Redo | `⌘Z` / `⌘⇧Z` |
 
-The capture and history shortcuts work globally. Change them in **Keyboard Shortcuts…** from the Stackboard menu if they conflict with another app.
+The capture and history shortcuts work globally. Change them in **More actions → Keyboard Shortcuts…** from the Stackboard menu if they conflict with another app.
 
 ## A few things to know
 

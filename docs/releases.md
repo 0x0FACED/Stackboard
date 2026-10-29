@@ -4,6 +4,18 @@
 
 This guide documents the existing release process for maintainers. Commands are instructions and examples, not a record of publication actions performed. For a local build that does not publish anything, see [Build from source](development.md#build-from-source).
 
+## Release notes: 1.3.0
+
+- Added **Line**, a straight-line annotation tool with independent endpoint handles, color and width controls, erasing, cropping, and Undo/Redo.
+- Redesigned clipboard history with a compact list, a larger preview, and visible copy, pin, and delete actions.
+- Refreshed the menu bar panel with aligned shortcuts, an Open Image submenu, and a scrollable list of the eight most recent entries.
+- Added appearance-aware mint accents and consistent light/dark styling. Clipboard storage and retention rules are unchanged.
+
+For a local candidate, run `bash scripts/package-release.sh 1.3.0`, then `bash scripts/package-release.sh --verify-existing 1.3.0 dist/1.3.0`. The packaging script supplies the version to Xcode; the project's default `MARKETING_VERSION` is not the release version source.
+
+Publication still follows the tagged workflow below. It builds its own package using the Actions run number, so a local candidate's checksum must not be copied into the Homebrew tap.
+
+
 ## Publication workflows
 
 - [`ci.yml`](../.github/workflows/ci.yml) runs on pushes to `main`, pull requests, and manual dispatch. It checks workflow definitions, shell syntax, and release-tool behavior, builds a Universal package, and verifies the finished ZIP again.
@@ -36,12 +48,12 @@ The built-in `GITHUB_TOKEN` publishes the Release in the main repository. The se
 
 Commit the intended changes first. The tag must point to the commit containing the desired source code and release tools; uncommitted files are not included in the release.
 
-For example, to publish a new, unused version `1.0.2`, a maintainer would run the following from the repository root. These commands push changes and trigger publication; they are not local build commands.
+For example, to publish a new, unused version `1.3.0`, a maintainer would run the following from the repository root after committing the intended changes. These commands push changes and trigger publication; they are not local build commands.
 
 ```sh
 git push origin main
-git tag v1.0.2
-git push origin v1.0.2
+git tag v1.3.0
+git push origin v1.3.0
 ```
 
 The release workflow then:

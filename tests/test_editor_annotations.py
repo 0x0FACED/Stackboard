@@ -78,6 +78,9 @@ class EditorAnnotationTests(unittest.TestCase):
     def test_arrow_endpoint_handles_and_degenerate_paths_remain_editable(self):
         self.run_scenario("arrow-endpoints-degenerate")
 
+    def test_lines_have_no_arrowheads_and_both_endpoints_remain_editable(self):
+        self.run_scenario("line-endpoints")
+
     def test_ink_hit_testing_and_eraser_order_match_visible_objects(self):
         self.run_scenario("ink-hit-mask-order")
 

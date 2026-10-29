@@ -183,7 +183,7 @@ private func cancellation() throws {
 
 @MainActor
 private func annotationTypes() throws {
-    for kind in ["pen", "arrow", "rectangle-outline", "rectangle-filled", "ellipse-outline", "ellipse-filled", "blur", "text"] {
+    for kind in ["pen", "arrow", "line", "rectangle-outline", "rectangle-filled", "ellipse-outline", "ellipse-filled", "blur", "text"] {
         let document = EditorDocument(baseImage: makeImage())
         let original = try pixels(document)
         document.setLineWidthControlValue(16)
@@ -198,6 +198,7 @@ private func annotationTypes() throws {
             if kind.hasPrefix("rectangle") { tool = .rectangle }
             else if kind.hasPrefix("ellipse") { tool = .ellipse }
             else if kind == "arrow" { tool = .arrow }
+            else if kind == "line" { tool = .line }
             else if kind == "blur" { tool = .blur }
             else { tool = .pen }
             document.activateTool(tool)
@@ -657,7 +658,7 @@ private func textRetinaAndImageEdges() throws {
 }
 
 private let visualKinds = [
-    "stroke", "arrow", "rectangle-outline", "rectangle-filled",
+    "stroke", "arrow", "line", "rectangle-outline", "rectangle-filled",
     "ellipse-outline", "ellipse-filled", "blur", "text",
 ]
 
@@ -736,6 +737,7 @@ private func createVisual(_ document: EditorDocument, kind: String) throws -> Ed
         switch kind {
         case "stroke": tool = .pen
         case "arrow": tool = .arrow
+        case "line": tool = .line
         case "blur": tool = .blur
         default: tool = kind.hasPrefix("ellipse") ? .ellipse : .rectangle
         }
@@ -772,6 +774,11 @@ private func expectTranslated(_ actual: EditorAnnotation, from original: EditorA
         expected.start = shifted(before.start)
         expected.end = shifted(before.end)
         try expect(after == expected, "Moving an arrow distorted endpoints or style")
+    case let (.line(before), .line(after)):
+        var expected = before
+        expected.start = shifted(before.start)
+        expected.end = shifted(before.end)
+        try expect(after == expected, "Moving a line distorted endpoints or style")
     case let (.shape(before), .shape(after)):
         var expected = before
         expected.rect.origin = shifted(before.rect.origin)
@@ -869,7 +876,7 @@ private func objectMoveResizeHistory() throws {
         document.redo()
         try expect(document.annotations == [moved, eraser], "Move redo did not restore exact \(kind) geometry and index")
         try expectSamePixels(pixels(document), movedPixels, "Move redo changed \(kind) export")
-        if kind == "arrow" { continue }
+        if kind == "arrow" || kind == "line" { continue }
 
         let overlay = try selectedOverlay(document)
         let offCenterGrab = CGPoint(x: overlay.handleRect.midX - 3, y: overlay.handleRect.midY + 2)
@@ -918,6 +925,85 @@ private func objectMoveResizeHistory() throws {
         document.undo()
         try expect(document.annotations.isEmpty && document.canUndo == false, "Drag events fragmented \(kind) history")
     }
+}
+
+@MainActor
+private func lineGeometryAndEndpoints() throws {
+    let document = EditorDocument(baseImage: makeTextImage())
+    let background = try pixels(document)
+    document.activateTool(.line)
+    document.setLineWidthControlValue(12)
+    document.applySelectedColor(.red)
+    document.beginInteraction(at: CGPoint(x: 120, y: 120))
+    document.updateInteraction(at: CGPoint(x: 260, y: 200))
+    document.endInteraction(at: CGPoint(x: 420, y: 120))
+    guard case let .line(initial)? = document.annotations.first else {
+        throw Failure.check("Line tool did not create a line")
+    }
+    let original = document.annotations
+    let drawn = try pixels(document)
+    for point in [CGPoint(x: 200, y: 120), CGPoint(x: 116, y: 120), CGPoint(x: 424, y: 120)] {
+        try expect(distance(color(drawn, point), EditorColor.red.nsColor) < 0.02, "Line shaft or round cap is missing")
+    }
+    for point in [CGPoint(x: 260, y: 200), CGPoint(x: 400, y: 110), CGPoint(x: 400, y: 130)] {
+        try same(drawn, background, at: point, "Line followed intermediate motion or drew an arrowhead")
+    }
+    selectObject(document, at: CGPoint(x: 200, y: 120))
+    let overlay = try selectedOverlay(document)
+    guard let startHandle = overlay.secondaryHandleRect else {
+        throw Failure.check("Line is missing its start handle")
+    }
+    let startGrab = CGPoint(x: startHandle.midX + 3, y: startHandle.midY - 2)
+    drag(document, from: startGrab, to: startGrab)
+    try expect(document.annotations == original, "A stationary line handle snapped its endpoint")
+    drag(document, from: startGrab, to: CGPoint(x: startGrab.x - 20, y: startGrab.y + 30))
+    guard case let .line(startChanged) = try annotation(document, id: initial.id) else {
+        throw Failure.check("Start handle changed the line type")
+    }
+    try expect(
+        startChanged.start == CGPoint(x: 100, y: 150) && startChanged.end == initial.end
+            && startChanged.color == initial.color && startChanged.lineWidth == initial.lineWidth,
+        "Start handle moved the wrong endpoint, changed style, or lost its pointer offset"
+    )
+    let afterStart = document.annotations
+    let endHandle = try selectedOverlay(document).handleRect
+    let endGrab = CGPoint(x: endHandle.midX - 4, y: endHandle.midY + 2)
+    drag(document, from: endGrab, to: CGPoint(x: endGrab.x + 40, y: endGrab.y + 60))
+    guard case let .line(endChanged) = try annotation(document, id: initial.id) else {
+        throw Failure.check("End handle changed the line type")
+    }
+    try expect(
+        endChanged.start == startChanged.start && endChanged.end == CGPoint(x: 460, y: 180),
+        "End handle moved the start point or lost its pointer offset"
+    )
+    let afterBoth = document.annotations
+    let editedPixels = try pixels(document)
+    document.undo()
+    try expect(document.annotations == afterStart, "End handle drag was not a single undo operation")
+    document.undo()
+    try expect(document.annotations == original, "Start handle drag was not a single undo operation")
+    document.redo()
+    document.redo()
+    try expect(document.annotations == afterBoth, "Redo did not restore line endpoints and identity")
+    try expectSamePixels(pixels(document), editedPixels, "Redo changed line pixels")
+
+    drag(document, from: endChanged.end, to: endChanged.start)
+    _ = document.handleEscape()
+    selectObject(document, at: endChanged.start)
+    try expect(document.selectedAnnotation?.id == initial.id, "A collapsed line became unselectable")
+    let collapsedPixels = try pixels(document)
+    try expect(
+        distance(color(collapsedPixels, endChanged.start), EditorColor.red.nsColor) < 0.02,
+        "A collapsed round-capped line disappeared"
+    )
+    drag(document, from: endChanged.start, to: CGPoint(x: 80, y: 250))
+    guard case let .line(reopened) = try annotation(document, id: initial.id) else {
+        throw Failure.check("Collapsed line changed its type")
+    }
+    try expect(
+        reopened.start == endChanged.start && reopened.end == CGPoint(x: 80, y: 250),
+        "A collapsed line could not be extended in the opposite direction"
+    )
 }
 
 @MainActor
@@ -979,7 +1065,7 @@ private func arrowEndpointsAndDegenerateGeometry() throws {
     selectObject(head, at: CGPoint(x: 345, y: 154))
     try expect(head.selectedAnnotation?.id == headID, "Arrow-head ink outside shaft tolerance was not selectable")
 
-    for tool in [EditorTool.pen, .arrow] {
+    for tool in [EditorTool.pen, .arrow, .line] {
         for end in [CGPoint(x: 300, y: 160), CGPoint(x: 160, y: 300)] {
             let thin = EditorDocument(baseImage: makeImage())
             thin.activateTool(tool)
@@ -1023,12 +1109,12 @@ private func arrowEndpointsAndDegenerateGeometry() throws {
 
 @MainActor
 private func inkHitTestingAndMaskOrdering() throws {
-    for kind in ["stroke", "arrow", "rectangle-outline", "ellipse-outline", "rectangle-filled", "ellipse-filled"] {
+    for kind in ["stroke", "arrow", "line", "rectangle-outline", "ellipse-outline", "rectangle-filled", "ellipse-filled"] {
         let document = EditorDocument(baseImage: makeImage())
         let object = try createVisual(document, kind: kind)
         let emptyPoint: CGPoint
         switch kind {
-        case "stroke", "arrow": emptyPoint = CGPoint(x: 110, y: 210)
+        case "stroke", "arrow", "line": emptyPoint = CGPoint(x: 110, y: 210)
         case "ellipse-filled": emptyPoint = CGPoint(x: 103, y: 103)
         default: emptyPoint = CGPoint(x: 200, y: 160)
         }
@@ -1185,6 +1271,7 @@ private func replacingID(_ annotation: EditorAnnotation, with id: UUID) -> Edito
     switch annotation {
     case var .stroke(value): value.id = id; return .stroke(value)
     case var .arrow(value): value.id = id; return .arrow(value)
+    case var .line(value): value.id = id; return .line(value)
     case var .shape(value): value.id = id; return .shape(value)
     case var .blur(value): value.id = id; return .blur(value)
     case var .text(value): value.id = id; return .text(value)
@@ -1948,6 +2035,7 @@ private struct EditorAnnotationTests {
             case "creation-history": try creationHistory()
             case "object-move-resize-history": try objectMoveResizeHistory()
             case "arrow-endpoints-degenerate": try arrowEndpointsAndDegenerateGeometry()
+            case "line-endpoints": try lineGeometryAndEndpoints()
             case "ink-hit-mask-order": try inkHitTestingAndMaskOrdering()
             case "selected-style-history": try selectedStyleHistory()
             case "duplicate-delete-history": try duplicateDeleteHistory()

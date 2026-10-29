@@ -58,7 +58,7 @@ Stackboard uses **Swift, SwiftUI, and AppKit**. Clipboard history is stored in *
 
 | Area | Sources |
 | --- | --- |
-| Menus, windows, and application actions | [`AppController.swift`](../Stackboard/AppController.swift), [`MenuBarMenuView.swift`](../Stackboard/MenuBarMenuView.swift) |
+| Menus, windows, and application actions | [`AppController.swift`](../Stackboard/AppController.swift), [`MenuBarMenuView.swift`](../Stackboard/MenuBarMenuView.swift), [`HistoryWindowController.swift`](../Stackboard/HistoryWindowController.swift), [`ClipboardUIStyle.swift`](../Stackboard/ClipboardUIStyle.swift) |
 | Clipboard monitoring and history storage | [`ClipboardMonitor.swift`](../Stackboard/ClipboardMonitor.swift), [`ClipboardService.swift`](../Stackboard/ClipboardService.swift), [`ClipboardHistoryStore.swift`](../Stackboard/ClipboardHistoryStore.swift) |
 | Screen capture and region selection | [`ScreenshotCoordinator.swift`](../Stackboard/ScreenshotCoordinator.swift), [`DesktopCapture.swift`](../Stackboard/DesktopCapture.swift) |
 | Editor and annotations | [`EditorDocument.swift`](../Stackboard/EditorDocument.swift), [`EditorAnnotationGeometry.swift`](../Stackboard/EditorAnnotationGeometry.swift), [`ScreenshotEditorView.swift`](../Stackboard/ScreenshotEditorView.swift) |
@@ -97,8 +97,11 @@ The Python suite tests the release tools. On macOS with Xcode, it also exercises
 
 The tests do not make network requests, modify the Homebrew tap, or read the system clipboard or user history. They do not replace manual testing of the app's interface.
 
+For clipboard UI changes, also smoke-check live macOS windows in light and dark appearances and at the history window's 860×560 minimum content size. Use an isolated history directory and a named pasteboard rather than personal clipboard data. Check selection without copying, preview copy/pin/delete actions, missing files, empty and no-result states, and tray lists with zero, one, and eight entries, including scrolling to the last entry.
+
 Additional image checks cover:
 
+- **Straight lines:** check round caps, absence of arrowheads, independent endpoint handles (including collapsed and reversed lines), selection, styling, movement, erasing, duplication, cropping, and Undo/Redo.
 - **PNG/JPEG export:** decode saved files to check Retina resolution, annotation pixels, PNG transparency, white backgrounds for transparent JPEG regions, the effect of quality on image fidelity, and document preservation when writing fails.
 - **Cropping:** compare pixels with the corresponding source region, including Retina images, partially cropped shapes, arrows and text, eraser masks, and Blur at the new boundary. Checks include repeated crops, alternating crops with object edits, Undo/Redo, cancelling the crop frame, preserving the Redo branch, and boundary sizes down to one pixel.
 - **Native crop and composite rasterization:** use explicit 1× and 2× bitmap contexts, including odd Retina dimensions and Undo restoration. Cropped images keep an explicit `NSBitmapImageRep`, so pixel dimensions must not depend on display scale or a headless CI environment.
